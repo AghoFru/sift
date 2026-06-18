@@ -1,0 +1,30 @@
+# Rust build output (local + remote)
+target/
+.env-cargo
+
+# All artifact directories (regeneratable via `sift build`)
+artifacts/
+artifacts-*/
+build-tmp/
+tests/data/
+
+# Local-only ops files
+screens/
+*.log
+*.lgb.json
+sift_qr.png
+# Cargo.lock IS committed (binary project)
+
+# Python
+*.egg-info/
+__pycache__/
+*.pyc
+.venv/
+.hegel/
+bin/
+sift-serve.log
+
+# Reranker model artifacts (regenerable via reranker/ tooling; too big to track)
+reranker/ce-minilm-l6/
+reranker/model.json
+reranker/*.onnx

@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = ["crates/sift-core", "crates/sift"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["sift"]
+rust-version = "1.75"
+repository = "https://github.com/AghoFru/sift"
+homepage = "https://github.com/AghoFru/sift"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+memmap2 = "0.9"
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "compression-gzip"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
