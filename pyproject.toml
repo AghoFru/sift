@@ -1,0 +1,31 @@
+[project]
+name = "sift-build"
+version = "0.1.0"
+description = "Offline index builder for sift semantic sparse search."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "sift" }]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "hnswlib>=0.8",
+    "model2vec>=0.5",
+    "tokenizers>=0.20",
+    "tqdm>=4.66",
+]
+
+[project.urls]
+Homepage = "https://github.com/AghoFru/sift"
+Repository = "https://github.com/AghoFru/sift"
+Issues = "https://github.com/AghoFru/sift/issues"
+
+[project.scripts]
+sift = "sift_build.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sift_build*"]

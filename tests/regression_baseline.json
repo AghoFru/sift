@@ -1,0 +1,33 @@
+{
+  "_comment": "Pinned reference numbers. Bump only when an intentional improvement lands and you've reviewed the deltas. Tolerance is per-metric absolute.",
+  "_tolerance": {
+    "ndcg_at_10": 0.005,
+    "latency_p50_us_factor": 5.0,
+    "latency_p95_us_factor": 5.0,
+    "build_seconds_factor": 2.5,
+    "artifact_bytes_factor": 1.25
+  },
+  "datasets": {
+    "scifact": {
+      "ndcg_at_10": 0.7025,
+      "latency_p50_us": 69,
+      "latency_p95_us": 194,
+      "build_seconds": 3.69,
+      "artifact_bytes": 29603608
+    },
+    "nfcorpus": {
+      "ndcg_at_10": 0.4439,
+      "latency_p50_us": 24,
+      "latency_p95_us": 51,
+      "build_seconds": 2.8,
+      "artifact_bytes": 22354018
+    },
+    "fiqa": {
+      "ndcg_at_10": 0.3114,
+      "latency_p50_us": 461,
+      "latency_p95_us": 867,
+      "build_seconds": 9.68,
+      "artifact_bytes": 191664043
+    }
+  }
+}
