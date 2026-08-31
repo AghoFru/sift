@@ -1,5 +1,3 @@
-//! Advanced ranking strategies layered on the core sparse scorer.
-
 //! Optional retrieval and ranking modes built on the core sparse scorer.
 //!
 //! This module owns semantic score blending, custom ranking, MMR,
@@ -15,6 +13,77 @@ impl Index {
     /// `alpha = 1` is fully expanded and `alpha = 0` is exact BM25.
     pub fn score_blended(&self, query_tokens: &[u32], k: usize, alpha: f32) -> SearchResults {
         self.score_blended_qexp(query_tokens, k, alpha, &[])
+    }
+
+    /// Rerank a bounded blended-BM25 candidate set with order-aware static
+    /// composition vectors. The sidecar is optional and the normal sparse
+    /// scorer remains the fallback when it is absent.
+    pub fn score_blended_qexp_compositional(
+        &self,
+        query_tokens: &[u32],
+        ordered_tokens: &[u32],
+        k: usize,
+        alpha: f32,
+        qexp: &[(u32, f32)],
+        composition_weight: f32,
+    ) -> SearchResults {
+        if !self.has_composition() || composition_weight <= 0.0 || k == 0 {
+            return self.score_blended_qexp(query_tokens, k, alpha, qexp);
+        }
+        let t0 = Instant::now();
+        // The caller supplies the candidate window. Do not widen it here.
+        // Widening would let this reranker replace normal Sift candidates and
+        // would make Recall@100 depend on the composition weight.
+        let base = self.score_blended_qexp(query_tokens, k, alpha, qexp);
+        let query_vector = match self.compose_query(ordered_tokens) {
+            Some(vector) => vector,
+            None => {
+                return SearchResults {
+                    hits: base.hits.into_iter().take(k).collect(),
+                    matched_query_terms: base.matched_query_terms,
+                    elapsed_us: t0.elapsed().as_micros() as u64,
+                };
+            }
+        };
+        let weight = composition_weight.clamp(0.0, 1.0);
+        let base_max = base
+            .hits
+            .iter()
+            .map(|hit| hit.score)
+            .fold(0.0f32, f32::max)
+            .max(1e-9);
+        let base_min = base
+            .hits
+            .iter()
+            .map(|hit| hit.score)
+            .fold(f32::INFINITY, f32::min);
+        let base_range = (base_max - base_min).max(1e-9);
+        let mut reranked: Vec<(f32, u32)> = base
+            .hits
+            .iter()
+            .map(|hit| {
+                let lexical = (hit.score - base_min) / base_range;
+                let composition =
+                    (self.composition_similarity(hit.doc_idx, &query_vector) + 1.0) * 0.5;
+                let score = (1.0 - weight) * lexical + weight * composition;
+                (score, hit.doc_idx)
+            })
+            .collect();
+        reranked.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.cmp(&b.1))
+        });
+        let hits = reranked
+            .into_iter()
+            .take(k)
+            .map(|(score, doc_idx)| Hit { doc_idx, score })
+            .collect();
+        SearchResults {
+            hits,
+            matched_query_terms: base.matched_query_terms,
+            elapsed_us: t0.elapsed().as_micros() as u64,
+        }
     }
 
     /// [`Index::score_blended`] plus weighted query-side expansion terms.

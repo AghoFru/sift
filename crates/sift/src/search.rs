@@ -19,6 +19,10 @@ pub struct SearchArgs {
     /// index, and the default balances exact matches with semantic recall.
     #[arg(long, default_value_t = 0.5, value_parser = parse_semantic_weight)]
     pub semantic_weight: f32,
+    /// Weight of the optional order-aware composition rerank. Requires an
+    /// artifact built with `--compositional`. 0 disables.
+    #[arg(long, default_value_t = 0.0, value_parser = parse_composition_weight)]
+    pub composition_weight: f32,
     /// Show snippets in output.
     #[arg(long, default_value_t = true)]
     pub snippets: bool,
@@ -35,6 +39,17 @@ fn parse_semantic_weight(raw: &str) -> Result<f32, String> {
     }
 }
 
+fn parse_composition_weight(raw: &str) -> Result<f32, String> {
+    let value = raw
+        .parse::<f32>()
+        .map_err(|_| "composition weight must be a number in [0, 1]".to_string())?;
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err("composition weight must be a number in [0, 1]".to_string())
+    }
+}
+
 pub fn run(args: SearchArgs) -> Result<()> {
     let set =
         IndexSet::open(&args.index).with_context(|| format!("opening {}", args.index.display()))?;
@@ -47,7 +62,19 @@ pub fn run(args: SearchArgs) -> Result<()> {
             eprintln!("(no content tokens in query)");
             return Ok(());
         }
-        let r = idx.score_blended(&tokens, args.k, args.semantic_weight);
+        let r = if args.composition_weight > 0.0 {
+            let ordered_tokens = idx.tokenize_query_keep_order(&args.query);
+            idx.score_blended_qexp_compositional(
+                &tokens,
+                &ordered_tokens,
+                args.k,
+                args.semantic_weight,
+                &[],
+                args.composition_weight,
+            )
+        } else {
+            idx.score_blended(&tokens, args.k, args.semantic_weight)
+        };
         println!(
             "# {} hits  matched_terms={}  latency={}µs",
             r.hits.len(),
@@ -64,6 +91,11 @@ pub fn run(args: SearchArgs) -> Result<()> {
             }
         }
     } else {
+        if args.composition_weight > 0.0 {
+            anyhow::bail!(
+                "composition reranking requires a single segment; run `sift compact` first"
+            );
+        }
         let r = set.search_merged(&args.query, args.k, ScoreMode::Plain, args.semantic_weight);
         println!(
             "# {} hits  matched_terms={}  latency={}µs  ({} segments)",
@@ -100,7 +132,7 @@ fn truncate(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_semantic_weight;
+    use super::{parse_composition_weight, parse_semantic_weight};
 
     #[test]
     fn semantic_weight_stays_in_unit_interval() {
@@ -110,5 +142,15 @@ mod tests {
         assert!(parse_semantic_weight("-0.1").is_err());
         assert!(parse_semantic_weight("1.1").is_err());
         assert!(parse_semantic_weight("NaN").is_err());
+    }
+
+    #[test]
+    fn composition_weight_stays_in_unit_interval() {
+        assert_eq!(parse_composition_weight("0").unwrap(), 0.0);
+        assert_eq!(parse_composition_weight("0.7").unwrap(), 0.7);
+        assert_eq!(parse_composition_weight("1").unwrap(), 1.0);
+        assert!(parse_composition_weight("-0.1").is_err());
+        assert!(parse_composition_weight("1.1").is_err());
+        assert!(parse_composition_weight("NaN").is_err());
     }
 }

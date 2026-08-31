@@ -3,6 +3,7 @@
 //! snippet highlighting).
 
 use super::filters::{passes_filters, FilterClause};
+use super::query_negation::NegationParts;
 use super::{resolve_alias, AppState, CachedSearch, IndexEntry, SlowEntry};
 use axum::{
     extract::{Json, State},
@@ -18,6 +19,88 @@ use std::sync::Arc;
 use std::time::Instant;
 
 include!("query/request.rs");
+
+/// Add high-confidence static neighbors of natural-language negative terms.
+/// The exact seed is always kept. Only whole-word neighbors above this
+/// threshold are added, because a broad semantic exclusion can hide valid
+/// documents.
+fn add_natural_exclusion_neighbors(index: &Index, seeds: &[u32], excluded: &mut Vec<u32>) {
+    const MIN_SIMILARITY: f32 = 0.88;
+    const MAX_NEIGHBORS_PER_TERM: usize = 4;
+    let mut seen: std::collections::HashSet<u32> = excluded.iter().copied().collect();
+    for &seed in seeds {
+        if let Some((neighbors, similarities)) = index.qexp_neighbors(seed) {
+            let mut added = 0usize;
+            for (&neighbor, &similarity) in neighbors.iter().zip(similarities) {
+                if added == MAX_NEIGHBORS_PER_TERM {
+                    break;
+                }
+                if similarity < MIN_SIMILARITY {
+                    continue;
+                }
+                let Some(token) = index.token_string(neighbor) else {
+                    continue;
+                };
+                if token.starts_with("##") || !token.chars().any(|c| c.is_alphanumeric()) {
+                    continue;
+                }
+                if seen.insert(neighbor) {
+                    excluded.push(neighbor);
+                    added += 1;
+                }
+            }
+        }
+    }
+}
+
+/// Add simple inflection variants for a negative whole-word token. Static
+/// vocabularies often keep cat and cats as separate entries, so exact
+/// negative matching must account for common plural forms.
+fn add_natural_exclusion_inflections(index: &Index, seeds: &[u32], excluded: &mut Vec<u32>) {
+    let mut seen: std::collections::HashSet<u32> = excluded.iter().copied().collect();
+    for &seed in seeds {
+        let Some(token) = index.token_string(seed) else {
+            continue;
+        };
+        let surface = token.trim_start_matches('▁');
+        if surface.len() < 4 || !surface.chars().all(|c| c.is_alphabetic()) {
+            continue;
+        }
+        let singular = if let Some(stem) = surface.strip_suffix("ies") {
+            format!("{stem}y")
+        } else if surface.ends_with("ses")
+            || surface.ends_with("xes")
+            || surface.ends_with("zes")
+            || surface.ends_with("ches")
+            || surface.ends_with("shes")
+        {
+            surface[..surface.len() - 2].to_string()
+        } else if let Some(stem) = surface.strip_suffix('s') {
+            stem.to_string()
+        } else {
+            continue;
+        };
+        for variant in index.tokenize_query(&singular) {
+            if seen.insert(variant) {
+                excluded.push(variant);
+            }
+        }
+    }
+}
+
+fn parse_query_with_natural_negation(index: &Index, query: &str) -> (Vec<u32>, Vec<u32>) {
+    let NegationParts { positive, negative } = super::query_negation::extract(query);
+    let (included, explicit_excluded) = index.parse_query(&positive);
+    let natural_seeds: Vec<u32> = negative
+        .iter()
+        .flat_map(|text| index.tokenize_query(text))
+        .collect();
+    let mut excluded = explicit_excluded;
+    excluded.extend(natural_seeds.iter().copied());
+    add_natural_exclusion_inflections(index, &natural_seeds, &mut excluded);
+    add_natural_exclusion_neighbors(index, &natural_seeds, &mut excluded);
+    (included, excluded)
+}
 
 /// Escape a plain snippet before adding trusted `<mark>` tags.
 fn html_escape(s: &str) -> String {
@@ -198,6 +281,11 @@ struct Features {
     bm25_combined: f32,
     bm25_exact: f32,
     bm25_semantic: f32,
+    bm25_blended: f32,
+    bigram_bonus: f32,
+    qexp_score: f32,
+    composition_similarity: f32,
+    retrieval_score: f32,
     coverage: f32,
     doc_len: f32,
 }
@@ -297,10 +385,13 @@ pub(crate) async fn search(
             || req.dedup
             || !req.rank.is_empty()
             || !req.facets.is_empty()
+            || req.composition_weight > 0.0
+            || req.contextual_weight > 0.0
         {
             return Err((
                 StatusCode::CONFLICT,
-                "index has multiple segments; facets, rank tiers, mmr, prf and dedup \
+                "index has multiple segments; facets, rank tiers, mmr, prf, dedup, \
+                 composition and contextual reranking \
                  require a single segment - run `sift compact` first"
                     .to_string(),
             ));
@@ -441,6 +532,8 @@ pub(crate) async fn search(
         ((req.bigram_weight * 1e6) as i32).hash(&mut h);
         ((req.proximity_weight * 1e6) as i32).hash(&mut h);
         ((req.qexp_weight * 1e6) as i32).hash(&mut h);
+        ((req.composition_weight * 1e6) as i32).hash(&mut h);
+        ((req.contextual_weight * 1e6) as i32).hash(&mut h);
         req.dedup.hash(&mut h);
         req.wand.hash(&mut h);
         req.offset.hash(&mut h);
@@ -479,8 +572,8 @@ pub(crate) async fn search(
         }
     }
 
-    let (tokens, excluded) = entry.idx().parse_query(&effective_q);
-    if tokens.is_empty() {
+    let (tokens, excluded) = parse_query_with_natural_negation(entry.idx(), &effective_q);
+    if tokens.is_empty() && excluded.is_empty() {
         return Ok(RespJson(SearchResp {
             index: idx_name,
             matched_terms: 0,
@@ -539,13 +632,32 @@ pub(crate) async fn search(
 
     // A request shape that plain ranked search (and therefore reranking)
     // can serve: no exotic scoring mode that owns its own ordering.
-    let plain_shape = req.rerank.unwrap_or(true)
-        && excluded.is_empty()
+    let contextual_shape = req.rerank.unwrap_or(true)
+        && !tokens.is_empty()
         && !req.features
         && req.rank.is_empty()
         && !req.mmr
         && !req.prf
-        && !effective_q.contains('|');
+        && req.composition_weight <= 0.0
+        && req.filter.is_empty();
+    let ce_shape = contextual_shape && (req.contextual_weight > 0.0 || excluded.is_empty());
+    let plain_shape = ce_shape && req.contextual_weight <= 0.0;
+
+    let contextual_requested = req.contextual_weight > 0.0 && req.rerank.unwrap_or(true);
+    if contextual_requested && !contextual_shape {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "contextual_weight requires a basic single-segment query without filters, \
+             phrase groups, or another reranker"
+                .to_string(),
+        ));
+    }
+    if contextual_requested && state.cross_encoder.is_none() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "contextual_weight requires a server started with --cross-encoder".to_string(),
+        ));
+    }
 
     // Query-side expansion: pull each query term's embedding neighbors from
     // the sidecar as weighted extra terms (scored against the exact index
@@ -577,13 +689,22 @@ pub(crate) async fn search(
     // Cross-encoder rerank: retrieve a candidate window with the normal
     // blended scorer, then let the ONNX model rescore (query, doc) pairs
     // jointly. The window keeps base order below ce_depth.
-    let ce_hits: Option<sift_core::SearchResults> = match (plain_shape, &state.cross_encoder) {
+    let ce_hits: Option<sift_core::SearchResults> = match (ce_shape, &state.cross_encoder) {
         (true, Some(ce)) => {
             let depth = (k + offset).max(state.ce_depth).min(10_000);
-            let mut r =
+            let mut r = if excluded.is_empty() {
                 entry
                     .idx()
-                    .score_blended_qexp(&tokens, depth, req.blend_alpha, &qexp_terms);
+                    .score_blended_qexp(&tokens, depth, req.blend_alpha, &qexp_terms)
+            } else {
+                entry.idx().score_blended_qexp_excluding(
+                    &tokens,
+                    &excluded,
+                    depth,
+                    req.blend_alpha,
+                    &qexp_terms,
+                )
+            };
             let window = r.hits.len().min(state.ce_depth);
             let texts: Vec<String> = r.hits[..window]
                 .iter()
@@ -604,26 +725,82 @@ pub(crate) async fn search(
                 })
                 .collect();
             match ce.score_pairs(&effective_q, &texts) {
-                Ok(scores) if scores.len() == window => {
-                    let mut order: Vec<usize> = (0..window).collect();
-                    order.sort_by(|&a, &b| {
-                        scores[b]
-                            .partial_cmp(&scores[a])
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                    let reranked: Vec<sift_core::Hit> = order
-                        .iter()
-                        .map(|&i| sift_core::Hit {
-                            doc_idx: r.hits[i].doc_idx,
-                            score: scores[i],
-                        })
-                        .chain(r.hits[window..].iter().cloned())
-                        .collect();
-                    r.hits = reranked;
+                Ok(scores) if window > 0 && scores.len() == window => {
+                    if contextual_requested {
+                        let base_min = r
+                            .hits
+                            .iter()
+                            .map(|hit| hit.score)
+                            .fold(f32::INFINITY, f32::min);
+                        let base_max = r
+                            .hits
+                            .iter()
+                            .map(|hit| hit.score)
+                            .fold(f32::NEG_INFINITY, f32::max);
+                        let context_min = scores.iter().copied().fold(f32::INFINITY, f32::min);
+                        let context_max = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                        if !base_min.is_finite()
+                            || !base_max.is_finite()
+                            || !context_min.is_finite()
+                            || !context_max.is_finite()
+                        {
+                            return Err((
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "contextual reranker returned a non-finite score".to_string(),
+                            ));
+                        }
+                        let base_range = (base_max - base_min).max(1e-9);
+                        let context_range = (context_max - context_min).max(1e-9);
+                        for (i, hit) in r.hits.iter_mut().enumerate() {
+                            let lexical = (hit.score - base_min) / base_range;
+                            let context = if i < window {
+                                (scores[i] - context_min) / context_range
+                            } else {
+                                0.0
+                            };
+                            hit.score = (1.0 - req.contextual_weight) * lexical
+                                + req.contextual_weight * context;
+                        }
+                        r.hits.sort_by(|a, b| {
+                            b.score
+                                .partial_cmp(&a.score)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then_with(|| a.doc_idx.cmp(&b.doc_idx))
+                        });
+                    } else {
+                        let mut order: Vec<usize> = (0..window).collect();
+                        order.sort_by(|&a, &b| {
+                            scores[b]
+                                .partial_cmp(&scores[a])
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        let reranked: Vec<sift_core::Hit> = order
+                            .iter()
+                            .map(|&i| sift_core::Hit {
+                                doc_idx: r.hits[i].doc_idx,
+                                score: scores[i],
+                            })
+                            .chain(r.hits[window..].iter().cloned())
+                            .collect();
+                        r.hits = reranked;
+                    }
                     Some(r)
+                }
+                Ok(_) if window == 0 => Some(r),
+                Ok(_) if contextual_requested => {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "contextual reranker returned an invalid score count".to_string(),
+                    ));
                 }
                 Ok(_) => Some(r), // model returned nothing (stub build); keep base order
                 Err(e) => {
+                    if contextual_requested {
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("contextual reranker failed: {e}"),
+                        ));
+                    }
                     tracing::warn!("cross-encoder rerank failed: {e}; serving base order");
                     Some(r)
                 }
@@ -642,7 +819,20 @@ pub(crate) async fn search(
     let rerank_results = if do_rerank {
         // Rerank depth: enough for the page requested, at least 100.
         let depth = (k + offset).clamp(100, 10_000);
-        entry.idx().score_with_features(&tokens, depth)
+        let candidates = if req.blend_alpha < 1.0 || !qexp_terms.is_empty() {
+            entry
+                .idx()
+                .score_blended_qexp(&tokens, depth, req.blend_alpha, &qexp_terms)
+        } else {
+            entry.idx().score(&tokens, depth)
+        };
+        entry.idx().features_for_hits(
+            &tokens,
+            &candidates.hits,
+            req.blend_alpha,
+            &q_ordered,
+            req.bigram_weight,
+        )
     } else {
         None
     };
@@ -654,27 +844,59 @@ pub(crate) async fn search(
         (r.matched_query_terms, r.elapsed_us, h)
     } else if let Some(fr) = rerank_results {
         let model = state.reranker.as_ref().unwrap();
-        let mut scored: Vec<(f32, u32)> = fr
+        let feature_stats = super::rerank::FeatureStats::from_hits(&fr.hits);
+        let model_scores: Vec<(f32, f32, u32)> = fr
             .hits
             .iter()
             .enumerate()
             .map(|(rank, h)| {
-                let f = super::rerank::feature_vector(
-                    h.bm25_combined,
-                    h.bm25_exact,
-                    h.bm25_semantic,
-                    h.coverage,
-                    h.doc_len,
-                    rank,
-                );
-                (model.score(&f), h.doc_idx)
+                let score = match model.schema {
+                    super::rerank::FeatureSchema::LegacyRaw => {
+                        let f = super::rerank::legacy_feature_vector(
+                            h.bm25_combined,
+                            h.bm25_exact,
+                            h.bm25_semantic,
+                            h.coverage,
+                            h.doc_len,
+                            rank,
+                        );
+                        model.score(&f)
+                    }
+                    super::rerank::FeatureSchema::RelativeV1 => {
+                        let f = super::rerank::feature_vector(h, rank, &feature_stats);
+                        model.score(&f)
+                    }
+                };
+                (score, h.retrieval_score, h.doc_idx)
             })
             .collect();
+        let mut scored = match model.schema {
+            super::rerank::FeatureSchema::LegacyRaw => model_scores
+                .iter()
+                .map(|(score, _, doc_idx)| (*score, *doc_idx))
+                .collect(),
+            super::rerank::FeatureSchema::RelativeV1 => {
+                super::rerank::blend_with_sparse_prior(&model_scores, model.tree_weight)
+            }
+        };
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         let h: Vec<SearchHit> = scored.iter().map(|&(s, di)| mk_hit(di, s)).collect();
         (fr.matched_query_terms, fr.elapsed_us, h)
     } else if req.features && excluded.is_empty() {
-        if let Some(fr) = entry.idx().score_with_features(&tokens, inner_k) {
+        let candidates = if req.blend_alpha < 1.0 || !qexp_terms.is_empty() {
+            entry
+                .idx()
+                .score_blended_qexp(&tokens, inner_k, req.blend_alpha, &qexp_terms)
+        } else {
+            entry.idx().score(&tokens, inner_k)
+        };
+        if let Some(fr) = entry.idx().features_for_hits(
+            &tokens,
+            &candidates.hits,
+            req.blend_alpha,
+            &q_ordered,
+            req.bigram_weight,
+        ) {
             let h: Vec<SearchHit> = fr
                 .hits
                 .iter()
@@ -684,6 +906,11 @@ pub(crate) async fn search(
                         bm25_combined: h.bm25_combined,
                         bm25_exact: h.bm25_exact,
                         bm25_semantic: h.bm25_semantic,
+                        bm25_blended: h.bm25_blended,
+                        bigram_bonus: h.bigram_bonus,
+                        qexp_score: h.qexp_score,
+                        composition_similarity: h.composition_similarity,
+                        retrieval_score: h.retrieval_score,
                         coverage: h.coverage,
                         doc_len: h.doc_len,
                     });
@@ -739,7 +966,20 @@ pub(crate) async fn search(
         let h: Vec<SearchHit> = r.hits.iter().map(|h| mk_hit(h.doc_idx, h.score)).collect();
         (r.matched_query_terms, r.elapsed_us, h)
     } else {
-        let mut r = if (req.blend_alpha < 1.0 || !qexp_terms.is_empty()) && excluded.is_empty() {
+        let composition_enabled =
+            req.composition_weight > 0.0 && entry.idx().has_composition() && excluded.is_empty();
+        let mut r = if tokens.is_empty() {
+            entry.idx().score_all_excluding(&excluded, inner_k)
+        } else if composition_enabled {
+            entry.idx().score_blended_qexp_compositional(
+                &tokens,
+                &q_ordered,
+                inner_k,
+                req.blend_alpha,
+                &qexp_terms,
+                req.composition_weight,
+            )
+        } else if (req.blend_alpha < 1.0 || !qexp_terms.is_empty()) && excluded.is_empty() {
             entry
                 .idx()
                 .score_blended_qexp(&tokens, inner_k, req.blend_alpha, &qexp_terms)
@@ -758,7 +998,13 @@ pub(crate) async fn search(
         } else if excluded.is_empty() {
             entry.idx().score(&tokens, inner_k)
         } else {
-            entry.idx().score_excluding(&tokens, &excluded, inner_k)
+            entry.idx().score_blended_qexp_excluding(
+                &tokens,
+                &excluded,
+                inner_k,
+                req.blend_alpha,
+                &qexp_terms,
+            )
         };
         // Apply bigram + proximity bonuses to the top-K (cheap per hit), then
         // re-sort since bonuses can change the order of close-scored hits.
@@ -961,6 +1207,9 @@ mod tests {
     fn search_defaults_are_valid() {
         let req = request("");
         assert_eq!(req.blend_alpha, 0.5);
+        assert_eq!(req.bigram_weight, 0.4);
+        assert_eq!(req.composition_weight, 0.0);
+        assert_eq!(req.contextual_weight, 0.0);
         assert!(validate_search_req(&req).is_ok());
     }
 
@@ -975,6 +1224,16 @@ mod tests {
         assert!(validate_search_req(&req)
             .unwrap_err()
             .contains("proximity_weight"));
+
+        let req = request(r#""composition_weight":1.1"#);
+        assert!(validate_search_req(&req)
+            .unwrap_err()
+            .contains("composition_weight"));
+
+        let req = request(r#""contextual_weight":1.1"#);
+        assert!(validate_search_req(&req)
+            .unwrap_err()
+            .contains("contextual_weight"));
     }
 
     #[test]

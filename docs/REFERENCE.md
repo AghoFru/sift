@@ -57,6 +57,37 @@ curl -sX POST localhost:8080/search -d '{"index":"my","q":"...","blend_alpha":0.
 
 Set `blend_alpha` to `0` for exact scoring and `1` for the fully expanded score.
 
+### Order-aware composition
+
+Add `--compositional` during build to store a compact sidecar for the active
+static term vocabulary and every document. It contains normalized mean,
+alternating-position, and position-weighted pools. It does not store the full
+embedding table.
+
+```bash
+sift build --input corpus.jsonl --out my.sift --compositional
+```
+
+Enable the bounded rerank with `composition_weight` in the HTTP request or
+`--composition-weight` in the one-shot search command. The value must be in
+`[0,1]`, and `0` disables the feature.
+
+```bash
+sift search my.sift "cat eats mouse" --composition-weight 0.7
+curl -sX POST localhost:8080/search -d \
+  '{"index":"my","q":"cat eats mouse","composition_weight":0.7}'
+```
+
+The rerank uses the sparse scorer to produce a bounded candidate set, then
+combines its normalized score with composition similarity. It is available for
+single-segment indexes. The default is disabled. Local BEIR evaluation showed
+lower ranking quality with positive composition weights, while candidate
+recall stayed unchanged. Treat this as an opt-in mode for corpora with
+order-sensitive relevance labels. Compact an index after incremental updates
+before using this mode. Explicit `-term` exclusions still apply, and
+composition is disabled for excluded queries because a candidate rerank must
+not reintroduce filtered documents.
+
 ## Quick start
 
 ```bash
@@ -307,7 +338,7 @@ production implementation and source of truth for defaults.
 ## Optional reranking
 
 A reranker reorders candidates after retrieval. Two implementations are
-available and disabled by default:
+available. Both are disabled unless configured at server start:
 
 - **ONNX cross-encoder** (`serve --cross-encoder <dir>`, built with
   `--features cross-encoder`). Scores `(query, document)` pairs jointly. The
@@ -318,6 +349,76 @@ available and disabled by default:
 Both honor `"rerank": false` per request, and both require the exact-CSR
 sidecar. Evaluate ranking quality and latency on the target corpus before
 enabling either implementation.
+
+### Sift-native tree reranking
+
+The GBDT path is the Sift 2 default reranker when a compatible model is loaded.
+It uses fourteen signals that Sift already computes for the candidate window:
+relative retrieval, combined, exact, semantic, blended, bigram, qexp, and
+composition scores, query coverage, relative document length, score ratios,
+and candidate rank.
+Scores are normalized within each candidate window before tree evaluation, so
+the model does not depend on corpus-specific BM25 thresholds. It does not run
+a model over the query and document text, so its query cost is independent of
+document length.
+
+Build the training artifacts with `--compositional` when the model should use
+both qexp and composition evidence. Then train a model from labeled candidate
+results with the repository tool:
+
+```bash
+uv run --no-project --with lightgbm --with requests --with numpy \
+  reranker/train_lgbm.py \
+  --sift http://127.0.0.1:8080 \
+  --data tests/data \
+  --train scifact fiqa \
+  --ood nfcorpus \
+  --out reranker/reranker.lgb.json
+
+sift serve --artifacts ./artifacts --reranker reranker/reranker.lgb.json
+```
+
+The training corpus must represent the target search distribution. The direct
+`qexp_weight` and `composition_weight` controls can remain `0` because the
+tree receives both signals as normalized features. A tree can reorder
+candidates, but it cannot recover a relevant document that Sift did not
+retrieve. Set `"rerank": false` to compare the raw sparse ordering.
+
+### Contextual score blending
+
+The ONNX cross-encoder reads each query and document as one pair. Use
+`contextual_weight` to blend its score with the normalized sparse score:
+
+```bash
+cargo build --release --features cross-encoder
+sift serve --artifacts ./artifacts --cross-encoder ./reranker/ce-minilm-l6
+curl -sX POST localhost:8080/search -d \
+  '{"index":"my","q":"cat eats mouse","contextual_weight":0.8}'
+```
+
+The value must be in `[0,1]`. The server reranks the sparse candidate window
+with the cross-encoder. A value of `0` leaves the existing reranker behavior
+unchanged. A value above `0` requires the cross-encoder server option and a
+single-segment index. Set `"rerank": false` to disable the contextual pass.
+The contextual pass is separate from `composition_weight`, which does not
+load a neural model.
+
+## Natural-language exclusions
+
+The search parser recognizes common exclusion cues, including `not`, `without`,
+`except`, `other than`, and equivalents in several common languages. For
+example, these queries exclude documents that contain the negative concept:
+
+```text
+animal not cat
+animal other than cats
+animal without cats
+```
+
+Sift removes the negative scope before positive scoring. It applies exact
+term exclusions, common plural-to-singular mappings, and only high-confidence
+whole-word static neighbors. This avoids broad exclusions from weak embedding
+associations. Use `-cat` when the query needs exact explicit control.
 
 For recall rather than top-k precision, `--corpus-expand-weight` adds
 corpus-fitted expansion edges from term co-occurrence (PPMI) on top of the

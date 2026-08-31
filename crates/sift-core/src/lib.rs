@@ -62,6 +62,10 @@ pub struct Meta {
     /// collection-wide idf. Defaults to 1.0 (no damping) for older artifacts.
     #[serde(default = "default_subword_weight")]
     pub subword_weight: f32,
+    /// Dimension of the optional order-aware composition vectors. Zero means
+    /// that the artifact does not contain the composition sidecar.
+    #[serde(default)]
+    pub composition_dim: u32,
 }
 
 fn default_subword_weight() -> f32 {
@@ -154,6 +158,9 @@ pub struct Index {
     _mm_qexp_indptr: Option<Mmap>,
     _mm_qexp_terms: Option<Mmap>,
     _mm_qexp_sims: Option<Mmap>,
+    _mm_composition_term_ids: Option<Mmap>,
+    _mm_composition_terms: Option<Mmap>,
+    _mm_composition_docs: Option<Mmap>,
     _mm_dedup: Option<Mmap>,
     _mm_block_max_indptr: Option<Mmap>,
     _mm_block_max: Option<Mmap>,
@@ -196,6 +203,11 @@ pub struct Index {
     pub(crate) qexp_indptr: Option<&'static [u64]>,
     pub(crate) qexp_terms: Option<&'static [u32]>,
     pub(crate) qexp_sims: Option<&'static [f32]>,
+    /// Active token ids and their static vectors for query composition.
+    pub(crate) composition_term_ids: Option<&'static [u32]>,
+    pub(crate) composition_terms: Option<&'static [half::f16]>,
+    /// One normalized order-aware composition vector per document.
+    pub(crate) composition_docs: Option<&'static [half::f16]>,
     /// Per-doc canonical mask (1 = canonical, 0 = exact duplicate of an
     /// earlier doc). None when the artifact wasn't built with --dedup.
     pub(crate) dedup_canonical: Option<&'static [u8]>,
@@ -316,17 +328,34 @@ pub fn normalize_text(s: &str) -> String {
         }
         // Drop dots between alphanumerics (handles U.S.A. → USA)
         if c == '.' && i > 0 && i + 1 < n {
-            let prev = chars[i - 1];
-            let next = chars[i + 1];
-            if prev.is_alphanumeric() && next.is_alphanumeric() {
+            let prev = chars[..i]
+                .iter()
+                .rev()
+                .copied()
+                .find(|c| !strip_set.contains(*c));
+            let next = chars[i + 1..]
+                .iter()
+                .copied()
+                .find(|c| !strip_set.contains(*c));
+            if prev.is_some_and(|c| c.is_alphanumeric())
+                && next.is_some_and(|c| c.is_alphanumeric())
+            {
                 continue;
             }
         }
         // Drop commas between digits (handles 1,000,000 → 1000000)
         if c == ',' && i > 0 && i + 1 < n {
-            let prev = chars[i - 1];
-            let next = chars[i + 1];
-            if prev.is_ascii_digit() && next.is_ascii_digit() {
+            let prev = chars[..i]
+                .iter()
+                .rev()
+                .copied()
+                .find(|c| !strip_set.contains(*c));
+            let next = chars[i + 1..]
+                .iter()
+                .copied()
+                .find(|c| !strip_set.contains(*c));
+            if prev.is_some_and(|c| c.is_ascii_digit()) && next.is_some_and(|c| c.is_ascii_digit())
+            {
                 continue;
             }
         }
@@ -623,6 +652,90 @@ impl Index {
         Some((&terms[lo..hi], &sims[lo..hi]))
     }
 
+    /// True when the artifact carries the optional composition sidecar.
+    pub fn has_composition(&self) -> bool {
+        self.meta.composition_dim > 0
+            && self.composition_term_ids.is_some()
+            && self.composition_terms.is_some()
+            && self.composition_docs.is_some()
+    }
+
+    /// Compose an ordered query from active static token vectors. The three
+    /// pools match the build-time document representation and preserve a
+    /// bounded amount of order without a query-time neural model.
+    pub(crate) fn compose_query(&self, ordered_tokens: &[u32]) -> Option<Vec<f32>> {
+        let term_ids = self.composition_term_ids?;
+        let terms = self.composition_terms?;
+        let output_dim = self.meta.composition_dim as usize;
+        if output_dim == 0 || output_dim % 3 != 0 {
+            return None;
+        }
+        let emb_dim = output_dim / 3;
+        if terms.len() != term_ids.len().saturating_mul(emb_dim) {
+            return None;
+        }
+        let mut vector = vec![0.0f32; output_dim];
+        let mut count = 0usize;
+        for &tid in ordered_tokens {
+            let pos = match term_ids.binary_search(&tid) {
+                Ok(pos) => pos,
+                Err(_) => continue,
+            };
+            let row = &terms[pos * emb_dim..(pos + 1) * emb_dim];
+            let sign = if count % 2 == 0 { 1.0 } else { -1.0 };
+            let position_weight = (count + 1) as f32;
+            for (dim, value) in row.iter().enumerate() {
+                let value = value.to_f32();
+                vector[dim] += value;
+                vector[emb_dim + dim] += sign * value;
+                vector[2 * emb_dim + dim] += position_weight * value;
+            }
+            count += 1;
+        }
+        if count == 0 {
+            return None;
+        }
+        let count_f = count as f32;
+        for value in &mut vector[..emb_dim] {
+            *value /= count_f;
+        }
+        for value in &mut vector[emb_dim..2 * emb_dim] {
+            *value /= count_f;
+        }
+        let count_squared = count_f * count_f;
+        for value in &mut vector[2 * emb_dim..] {
+            *value /= count_squared;
+        }
+        let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm == 0.0 {
+            return None;
+        }
+        for value in &mut vector {
+            *value /= norm;
+        }
+        Some(vector)
+    }
+
+    /// Cosine similarity between a normalized query composition vector and a
+    /// normalized document composition vector.
+    pub(crate) fn composition_similarity(&self, doc_idx: u32, query: &[f32]) -> f32 {
+        let docs = match self.composition_docs {
+            Some(docs) => docs,
+            None => return 0.0,
+        };
+        let dim = self.meta.composition_dim as usize;
+        let lo = doc_idx as usize * dim;
+        let hi = lo.saturating_add(dim);
+        if hi > docs.len() || query.len() != dim {
+            return 0.0;
+        }
+        docs[lo..hi]
+            .iter()
+            .zip(query)
+            .map(|(doc, query)| doc.to_f32() * query)
+            .sum()
+    }
+
     /// WAND-pruned BM25 scorer. Same result as `score()` modulo float
     /// associativity; skips posting-list entries that can't possibly enter
     /// the top-k by using a per-term upper-bound on contribution. Best
@@ -731,6 +844,11 @@ pub struct FeatureHit {
     pub bm25_combined: f32,
     pub bm25_exact: f32,
     pub bm25_semantic: f32,
+    pub bm25_blended: f32,
+    pub bigram_bonus: f32,
+    pub qexp_score: f32,
+    pub composition_similarity: f32,
+    pub retrieval_score: f32,
     pub coverage: f32,
     pub doc_len: f32,
 }

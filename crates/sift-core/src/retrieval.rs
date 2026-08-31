@@ -37,6 +37,13 @@ impl Weight for half::f16 {
     }
 }
 
+struct FeatureScores {
+    combined: Vec<f32>,
+    exact: Vec<f32>,
+    matched: u32,
+    touched: Vec<u32>,
+}
+
 /// BM25 saturation constants, hoisted out of the per-posting loop.
 #[derive(Clone, Copy)]
 pub(crate) struct Bm25 {
@@ -268,6 +275,61 @@ impl Index {
         });
         raw.hits.truncate(k);
         raw
+    }
+
+    /// Blend exact and expanded scores, then remove documents that contain
+    /// any excluded exact term. The exclusion list is resolved against the
+    /// exact CSR so semantic expansion cannot reintroduce a filtered document.
+    pub fn score_blended_qexp_excluding(
+        &self,
+        included: &[u32],
+        excluded: &[u32],
+        k: usize,
+        alpha: f32,
+        qexp: &[(u32, f32)],
+    ) -> SearchResults {
+        if excluded.is_empty() {
+            return self.score_blended_qexp(included, k, alpha, qexp);
+        }
+        let oversample = (k.saturating_mul(5)).max(50);
+        let mut raw = self.score_blended_qexp(included, oversample, alpha, qexp);
+        raw.hits.retain(|hit| {
+            excluded
+                .iter()
+                .all(|&term| !self.doc_has_exact_term(hit.doc_idx, term))
+        });
+        raw.hits.truncate(k);
+        raw
+    }
+
+    /// Return documents that do not contain any excluded exact term.
+    ///
+    /// A query with only negative text has no positive ranking signal, so
+    /// results are returned in stable document order. The result count is
+    /// bounded by `k`, and the scan stops after enough survivors are found.
+    pub fn score_all_excluding(&self, excluded: &[u32], k: usize) -> SearchResults {
+        let start = Instant::now();
+        let mut hits = Vec::with_capacity(k.min(self.n_docs()));
+        for doc_idx in 0..self.n_docs() {
+            let doc_idx = doc_idx as u32;
+            if excluded
+                .iter()
+                .all(|&term| !self.doc_has_exact_term(doc_idx, term))
+            {
+                hits.push(Hit {
+                    doc_idx,
+                    score: 0.0,
+                });
+                if hits.len() == k {
+                    break;
+                }
+            }
+        }
+        SearchResults {
+            hits,
+            matched_query_terms: 0,
+            elapsed_us: start.elapsed().as_micros() as u64,
+        }
     }
 
     /// BM25 score `query_tokens` against the expanded index, returning top-K
@@ -795,20 +857,18 @@ impl Index {
     /// learned reranker. Requires the optional exact CSR to have been
     /// written at build time. Returns `None` if the exact CSR isn't loaded.
     pub fn score_with_features(&self, query_tokens: &[u32], k: usize) -> Option<FeatureResults> {
+        self.score_with_features_blended(query_tokens, k, 1.0)
+    }
+
+    fn feature_score_arrays(&self, query_tokens: &[u32]) -> Option<FeatureScores> {
         self.exact_indptr?;
-        let t0 = Instant::now();
         let n = self.n_docs();
         let p = Bm25::of(self);
-
         let mut combined = vec![0.0f32; n];
         let mut exact = vec![0.0f32; n];
-        // The exact postings of a term are a subset of its expanded row
-        // (expansion only adds neighbour contributions), so the combined
-        // pass's touched list covers the exact pass too.
-        let mut touched: Vec<u32> = Vec::new();
-        let mut exact_touched: Vec<u32> = Vec::new();
+        let mut touched = Vec::new();
+        let mut exact_touched = Vec::new();
         let mut matched = 0u32;
-
         for &tid in query_tokens {
             if let Some((cols, vals, idf)) = self.term_postings(tid) {
                 matched += 1;
@@ -834,23 +894,90 @@ impl Index {
                 );
             }
         }
+        Some(FeatureScores {
+            combined,
+            exact,
+            matched,
+            touched,
+        })
+    }
 
-        // top-K by combined score
-        let hits_base = top_hits(&combined, &mut touched, k.min(n));
+    /// Like [`Index::score_with_features`], with the exact/semantic blend
+    /// exposed as a feature. This keeps learned reranking aligned with the
+    /// score that a normal Sift request uses.
+    pub fn score_with_features_blended(
+        &self,
+        query_tokens: &[u32],
+        k: usize,
+        alpha: f32,
+    ) -> Option<FeatureResults> {
+        self.score_with_features_ranked(query_tokens, k, alpha, &[], 0.0)
+    }
+
+    /// Like [`Index::score_with_features_blended`], including the ordered
+    /// bigram signal used by normal ranked search.
+    pub fn score_with_features_ranked(
+        &self,
+        query_tokens: &[u32],
+        k: usize,
+        alpha: f32,
+        ordered_tokens: &[u32],
+        bigram_weight: f32,
+    ) -> Option<FeatureResults> {
+        let t0 = Instant::now();
+        let n = self.n_docs();
+        let FeatureScores {
+            combined,
+            exact,
+            matched,
+            mut touched,
+        } = self.feature_score_arrays(query_tokens)?;
+
+        // Select the candidate window using the same exact/semantic blend as
+        // normal search. The full combined score remains available as a
+        // separate feature for the learned reranker.
+        let alpha = alpha.clamp(0.0, 1.0);
+        let mut blended = vec![0.0f32; n];
+        let mut bigram = vec![0.0f32; n];
+        for &doc_idx in &touched {
+            let doc_idx = doc_idx as usize;
+            let score = exact[doc_idx] + alpha * (combined[doc_idx] - exact[doc_idx]).max(0.0);
+            let bigram_score = if ordered_tokens.len() >= 2 {
+                self.bigram_bonus_for_doc(doc_idx as u32, ordered_tokens, bigram_weight)
+            } else {
+                0.0
+            };
+            blended[doc_idx] = score + bigram_score;
+            bigram[doc_idx] = bigram_score;
+        }
+        let hits_base = top_hits(&blended, &mut touched, k.min(n));
 
         let unique_q = query_tokens.len().max(1) as f32;
         let coverage = (matched as f32) / unique_q;
+        let qexp_scores = self.qexp_scores(query_tokens);
+        let composition_query = self.compose_query(ordered_tokens);
 
         let hits = hits_base
             .into_iter()
             .map(|h| {
-                let c = h.score;
+                let c = combined[h.doc_idx as usize];
                 let e = exact[h.doc_idx as usize].max(0.0);
+                let b = e + alpha * (c - e).max(0.0);
+                let bigram_bonus = bigram[h.doc_idx as usize];
+                let composition_similarity = composition_query
+                    .as_ref()
+                    .map(|query| (self.composition_similarity(h.doc_idx, query) + 1.0) * 0.5)
+                    .unwrap_or(0.0);
                 FeatureHit {
                     doc_idx: h.doc_idx,
                     bm25_combined: c,
                     bm25_exact: e,
                     bm25_semantic: (c - e).max(0.0),
+                    bm25_blended: b,
+                    bigram_bonus,
+                    qexp_score: qexp_scores[h.doc_idx as usize],
+                    composition_similarity,
+                    retrieval_score: b + bigram_bonus,
                     coverage,
                     doc_len: self.doc_lens[h.doc_idx as usize],
                 }
@@ -862,5 +989,110 @@ impl Index {
             matched_query_terms: matched,
             elapsed_us: t0.elapsed().as_micros() as u64,
         })
+    }
+
+    /// Compute features for a candidate set that was already selected by the
+    /// normal Sift scorer. This keeps reranking from changing retrieval recall.
+    pub fn features_for_hits(
+        &self,
+        query_tokens: &[u32],
+        candidates: &[Hit],
+        alpha: f32,
+        ordered_tokens: &[u32],
+        bigram_weight: f32,
+    ) -> Option<FeatureResults> {
+        let t0 = Instant::now();
+        let FeatureScores {
+            combined,
+            exact,
+            matched,
+            ..
+        } = self.feature_score_arrays(query_tokens)?;
+        let alpha = alpha.clamp(0.0, 1.0);
+        let unique_q = query_tokens.len().max(1) as f32;
+        let coverage = (matched as f32) / unique_q;
+        let qexp_scores = self.qexp_scores(query_tokens);
+        let composition_query = self.compose_query(ordered_tokens);
+        let mut hits: Vec<FeatureHit> = candidates
+            .iter()
+            .map(|candidate| {
+                let doc_idx = candidate.doc_idx as usize;
+                let c = combined[doc_idx];
+                let e = exact[doc_idx].max(0.0);
+                let b = e + alpha * (c - e).max(0.0);
+                let bigram_bonus = if ordered_tokens.len() >= 2 {
+                    self.bigram_bonus_for_doc(candidate.doc_idx, ordered_tokens, bigram_weight)
+                } else {
+                    0.0
+                };
+                let qexp_score = qexp_scores[doc_idx];
+                let composition_similarity = composition_query
+                    .as_ref()
+                    .map(|query| {
+                        (self.composition_similarity(candidate.doc_idx, query) + 1.0) * 0.5
+                    })
+                    .unwrap_or(0.0);
+                FeatureHit {
+                    doc_idx: candidate.doc_idx,
+                    bm25_combined: c,
+                    bm25_exact: e,
+                    bm25_semantic: (c - e).max(0.0),
+                    bm25_blended: b,
+                    bigram_bonus,
+                    qexp_score,
+                    composition_similarity,
+                    retrieval_score: b + bigram_bonus,
+                    coverage,
+                    doc_len: self.doc_lens[doc_idx],
+                }
+            })
+            .collect();
+        hits.sort_by(|a, b| {
+            b.retrieval_score
+                .partial_cmp(&a.retrieval_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.doc_idx.cmp(&b.doc_idx))
+        });
+        Some(FeatureResults {
+            hits,
+            matched_query_terms: matched,
+            elapsed_us: t0.elapsed().as_micros() as u64,
+        })
+    }
+
+    /// Score query-expansion evidence without changing candidate ordering.
+    /// The sidecar is exposed as a learned feature so a reranker can use it
+    /// selectively instead of applying one global expansion weight.
+    fn qexp_scores(&self, query_tokens: &[u32]) -> Vec<f32> {
+        let mut scores = vec![0.0f32; self.n_docs()];
+        if !self.has_qexp() {
+            return scores;
+        }
+        let query_set: std::collections::HashSet<u32> = query_tokens.iter().copied().collect();
+        let bm25 = Bm25::with_avgdl(self, self.meta.avgdl);
+        let mut touched = Vec::new();
+        for &query_token in query_tokens {
+            let Some((neighbors, similarities)) = self.qexp_neighbors(query_token) else {
+                continue;
+            };
+            for (&neighbor, &similarity) in neighbors.iter().zip(similarities) {
+                if query_set.contains(&neighbor) || similarity <= 0.0 {
+                    continue;
+                }
+                let Some((cols, vals, term_idf)) = self.term_postings_exact(neighbor) else {
+                    continue;
+                };
+                accumulate(
+                    cols,
+                    vals,
+                    self.doc_lens,
+                    bm25,
+                    similarity * term_idf,
+                    &mut scores,
+                    &mut touched,
+                );
+            }
+        }
+        scores
     }
 }

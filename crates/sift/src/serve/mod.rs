@@ -19,6 +19,7 @@ mod admin;
 mod ce;
 mod filters;
 mod query;
+mod query_negation;
 mod replicate_srv;
 mod rerank;
 mod writes;

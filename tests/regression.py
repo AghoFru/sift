@@ -17,6 +17,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import statistics
 import subprocess
 import sys
@@ -78,8 +79,10 @@ def ndcg_at_k(rels: list[int], k: int = 10) -> float:
 
 # ─── sift server lifecycle ─────────────────────────────────────────────
 
-def start_server(bin_path: Path, artifact_dir: Path, port: int) -> subprocess.Popen:
-    log = open("/tmp/sift_regression.log", "w")
+def start_server(
+    bin_path: Path, artifact_dir: Path, port: int, log_path: Path
+) -> tuple[subprocess.Popen, object]:
+    log = log_path.open("w")
     proc = subprocess.Popen(
         [str(bin_path), "serve", "--artifacts", str(artifact_dir), "--bind", f"127.0.0.1:{port}"],
         stdout=log, stderr=subprocess.STDOUT,
@@ -88,10 +91,11 @@ def start_server(bin_path: Path, artifact_dir: Path, port: int) -> subprocess.Po
     for _ in range(50):
         try:
             request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=0.5).read()
-            return proc
+            return proc, log
         except Exception:
             time.sleep(0.1)
     proc.terminate()
+    log.close()
     raise RuntimeError("server failed to start within 5s")
 
 
@@ -168,12 +172,16 @@ def main() -> int:
     tol = baseline["_tolerance"]
     datasets = baseline["datasets"]
 
-    # Build fresh artifacts to a tmp dir so we don't disturb production indices.
-    with tempfile.TemporaryDirectory(prefix="sift_regress_", dir="/tmp") as tmpdir:
+    # Keep task-owned test artifacts inside the project workspace.
+    with tempfile.TemporaryDirectory(
+        prefix="sift_regress_", dir=REPO_ROOT / "tests"
+    ) as tmpdir:
         tmp = Path(tmpdir)
         if args.keep_artifacts:
-            tmp = Path("/tmp/sift_regression_artifacts")
-            tmp.mkdir(exist_ok=True)
+            tmp = REPO_ROOT / "tests" / ".sift_regression_artifacts"
+            if tmp.exists():
+                shutil.rmtree(tmp)
+            tmp.mkdir()
 
         print(dim(f"building fresh artifacts into {tmp}"))
         build_times: dict[str, float] = {}
@@ -203,7 +211,8 @@ def main() -> int:
             artifact_sizes[ds] = size
             print(dim(f"  built {ds} in {build_times[ds]:.1f}s ({size/1e6:.1f} MB on disk)"))
 
-        proc = start_server(args.bin, tmp, PORT)
+        log_path = tmp / "regression-server.log"
+        proc, log = start_server(args.bin, tmp, PORT, log_path)
         try:
             measured = {}
             for ds in datasets:
@@ -224,6 +233,7 @@ def main() -> int:
                 proc.wait(timeout=3)
             except Exception:
                 proc.kill()
+            log.close()
 
     if args.update:
         baseline["datasets"] = measured

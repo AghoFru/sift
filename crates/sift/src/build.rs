@@ -303,9 +303,6 @@ pub fn run_with_model(args: BuildArgs, model: &Model) -> Result<()> {
         Vec::new()
     };
 
-    // free the now-unused tokenized buffer (large for msmarco)
-    drop(tokenized);
-
     // merge
     let mut df: Vec<u64> = vec![0u64; vocab_size];
     let mut inverted: Vec<Vec<(u32, u32)>> = (0..vocab_size).map(|_| Vec::new()).collect();
@@ -380,6 +377,32 @@ pub fn run_with_model(args: BuildArgs, model: &Model) -> Result<()> {
         .collect();
     let n_active = active_ids.len();
     println!("      active vocab: {n_active}  avgdl={avgdl:.1}");
+
+    // Optional order-aware composition sidecar. It stores only embeddings for
+    // active terms, so query composition does not require the full model table.
+    let composition_dim = if args.compositional {
+        let t_comp = Instant::now();
+        let mut term_vectors: Vec<f16> = Vec::with_capacity(n_active * emb_dim);
+        for &tid in &active_ids {
+            term_vectors.extend(embeddings[tid as usize].iter().copied().map(f16::from_f32));
+        }
+        let doc_vectors = build_composition_vectors(&tokenized, &stop_mask, embeddings, emb_dim);
+        write_bin(out.join("composition_term_ids.bin"), &active_ids)?;
+        write_bin(out.join("composition_terms.bin"), &term_vectors)?;
+        write_bin(out.join("composition_docs.bin"), &doc_vectors)?;
+        println!(
+            "      composition sidecar: dim={} docs={} terms={} ({:.2}s)",
+            emb_dim * 3,
+            doc_vectors.len() / (emb_dim * 3),
+            n_active,
+            t_comp.elapsed().as_secs_f64()
+        );
+        (emb_dim * 3) as u32
+    } else {
+        0
+    };
+    // Free the tokenized buffer after optional composition vectors are built.
+    drop(tokenized);
 
     // Build the EXACT CSR matrix (pre-expansion). Each row is the original
     // inverted-index postings for that term, sorted by doc id. Used at query
@@ -1014,6 +1037,7 @@ pub fn run_with_model(args: BuildArgs, model: &Model) -> Result<()> {
             "u32".to_string()
         },
         subword_weight: args.subword_weight,
+        composition_dim,
     };
     fs::write(out.join("meta.json"), serde_json::to_string_pretty(&meta)?)?;
 
