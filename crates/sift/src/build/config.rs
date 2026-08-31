@@ -103,6 +103,12 @@ pub struct BuildArgs {
     /// Adds ~4 bytes per indexed token to the artifact.
     #[arg(long, default_value_t = false)]
     pub positions: bool,
+    /// Store order-aware composition vectors for optional query reranking.
+    /// Uses the static model vectors with mean, alternating-position, and
+    /// position-weighted pools. Query requests enable this with
+    /// `composition_weight`.
+    #[arg(long, default_value_t = false)]
+    pub compositional: bool,
     /// Pack doc-id indices as 24-bit little-endian integers instead of u32
     /// when n_docs fits in 24 bits (≤ 16,777,215). Saves ~25% on the
     /// biggest file in the artifact (indices.bin, exact_indices.bin) and
@@ -189,6 +195,7 @@ struct Meta {
     build_seconds: f64,
     indices_packing: String,
     subword_weight: f32,
+    composition_dim: u32,
 }
 
 /// A loaded embedding model: tokenizer, keep-mask, and the m2v embedding table.

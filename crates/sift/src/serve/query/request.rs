@@ -79,6 +79,14 @@ pub(crate) struct SearchReq {
     /// against the exact index. 0 disables.
     #[serde(default)]
     qexp_weight: f32,
+    /// Weight of the optional order-aware composition rerank. Requires an
+    /// artifact built with `--compositional`. 0 disables.
+    #[serde(default)]
+    composition_weight: f32,
+    /// Weight of the contextual query-document rerank. Requires a server
+    /// started with `--cross-encoder`. 0 disables.
+    #[serde(default)]
+    contextual_weight: f32,
     /// When true and the artifact was built with --dedup, drop hits whose
     /// content hash matches an earlier doc. Default off so the response
     /// includes every match by default; clients that want unique results
@@ -140,7 +148,7 @@ fn default_blend_alpha() -> f32 {
     0.5
 }
 fn default_bigram_weight() -> f32 {
-    0.25
+    0.4
 }
 
 fn default_prf_k() -> usize {
@@ -189,6 +197,8 @@ fn validate_search_req(req: &SearchReq) -> Result<(), String> {
     non_negative("bigram_weight", req.bigram_weight)?;
     non_negative("proximity_weight", req.proximity_weight)?;
     non_negative("qexp_weight", req.qexp_weight)?;
+    in_unit_interval("composition_weight", req.composition_weight)?;
+    in_unit_interval("contextual_weight", req.contextual_weight)?;
 
     for tier in &req.rank {
         if tier.field.trim().is_empty() {

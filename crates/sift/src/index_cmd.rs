@@ -146,6 +146,9 @@ fn build_args_to_argv(b: &BuildArgs) -> Vec<String> {
     if b.positions {
         a.push("--positions".into());
     }
+    if b.compositional {
+        a.push("--compositional".into());
+    }
     if b.u24_indices {
         a.push("--u24-indices".into());
     }

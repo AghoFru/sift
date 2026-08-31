@@ -1,7 +1,8 @@
 """Train a LightGBM lambdarank reranker on top of sift.
 
 Pipeline:
-  1. Start a sift server pointing at artifacts-reranker/ (must include exact CSR).
+  1. Start a sift server pointing at artifacts-reranker/ (must include exact CSR
+     and --compositional sidecars for all 14 features).
   2. For each training dataset (scifact, fiqa), walk BEIR qrels.
   3. For each query, fetch top-K candidates from sift WITH features.
   4. Join hits with qrels: label = relevance if labeled else 0.
@@ -33,15 +34,22 @@ import requests
 
 DATA_DIR = Path(os.environ.get("SIFT_REGRESSION_DATA", "tests/data"))
 FEATURE_NAMES = [
-    "bm25_combined",
-    "bm25_exact",
-    "bm25_semantic",
-    "coverage",
-    "doc_len",
-    "log_doc_len",
+    "retrieval_score_rel",
+    "bm25_blended_rel",
+    "bm25_combined_rel",
+    "bm25_exact_rel",
+    "bm25_semantic_rel",
+    "bigram_rel",
+    "qexp_rel",
+    "composition_rel",
     "semantic_ratio",
+    "exact_ratio",
+    "coverage",
+    "log_doc_len_rel",
     "rank_inv",
+    "rank_fraction",
 ]
+FEATURE_SCHEMA = "relative-v1"
 
 
 # ─── data loading ──────────────────────────────────────────────────────
@@ -84,21 +92,72 @@ def fetch_candidates(sift_url: str, dataset: str, query: str, k: int) -> list[di
     return r.json().get("hits", [])
 
 
-def derive_features(hit: dict, rank: int) -> dict[str, float]:
+def candidate_stats(hits: list[dict]) -> dict[str, float]:
+    features = [h.get("features") or {} for h in hits]
+    combined = [float(f.get("bm25_combined", 0.0)) for f in features]
+    exact = [float(f.get("bm25_exact", 0.0)) for f in features]
+    semantic = [float(f.get("bm25_semantic", 0.0)) for f in features]
+    blended = [float(f.get("bm25_blended", c)) for f, c in zip(features, combined)]
+    bigram = [float(f.get("bigram_bonus", 0.0)) for f in features]
+    qexp = [float(f.get("qexp_score", 0.0)) for f in features]
+    composition = [
+        float(f.get("composition_similarity", 0.0)) for f in features
+    ]
+    retrieval = [
+        float(f.get("retrieval_score", b + bg))
+        for f, b, bg in zip(features, blended, bigram)
+    ]
+    log_doc_len = [
+        float(np.log1p(float(f.get("doc_len", 0.0)))) for f in features
+    ]
+    return {
+        "max_combined": max(max(combined, default=0.0), 1e-6),
+        "max_exact": max(max(exact, default=0.0), 1e-6),
+        "max_semantic": max(max(semantic, default=0.0), 1e-6),
+        "max_blended": max(max(blended, default=0.0), 1e-6),
+        "max_bigram": max(max(bigram, default=0.0), 1e-6),
+        "max_qexp": max(max(qexp, default=0.0), 1e-6),
+        "max_composition": max(max(composition, default=0.0), 1e-6),
+        "max_retrieval": max(max(retrieval, default=0.0), 1e-6),
+        "max_log_doc_len": max(max(log_doc_len, default=0.0), 1e-6),
+        "candidate_count": float(len(hits)),
+    }
+
+
+def derive_features(
+    hit: dict, rank: int, stats: dict[str, float]
+) -> dict[str, float]:
     f = hit.get("features") or {}
     bm25_c = float(f.get("bm25_combined", 0.0))
     bm25_e = float(f.get("bm25_exact", 0.0))
     bm25_s = float(f.get("bm25_semantic", 0.0))
+    bm25_b = float(f.get("bm25_blended", bm25_c))
+    bigram = float(f.get("bigram_bonus", 0.0))
+    qexp = float(f.get("qexp_score", 0.0))
+    composition = float(f.get("composition_similarity", 0.0))
+    retrieval = float(f.get("retrieval_score", bm25_b + bigram))
     dl = float(f.get("doc_len", 0.0))
+    candidate_count = int(stats["candidate_count"])
+    rank_fraction = (
+        1.0
+        if candidate_count <= 1
+        else 1.0 - rank / float(candidate_count - 1)
+    )
     return {
-        "bm25_combined": bm25_c,
-        "bm25_exact": bm25_e,
-        "bm25_semantic": bm25_s,
-        "coverage": float(f.get("coverage", 0.0)),
-        "doc_len": dl,
-        "log_doc_len": float(np.log1p(dl)),
+        "retrieval_score_rel": retrieval / stats["max_retrieval"],
+        "bm25_blended_rel": bm25_b / stats["max_blended"],
+        "bm25_combined_rel": bm25_c / stats["max_combined"],
+        "bm25_exact_rel": bm25_e / stats["max_exact"],
+        "bm25_semantic_rel": bm25_s / stats["max_semantic"],
+        "bigram_rel": bigram / stats["max_bigram"],
+        "qexp_rel": qexp / stats["max_qexp"],
+        "composition_rel": composition / stats["max_composition"],
         "semantic_ratio": bm25_s / max(bm25_c, 1e-6),
+        "exact_ratio": bm25_e / max(bm25_c, 1e-6),
+        "coverage": float(f.get("coverage", 0.0)),
+        "log_doc_len_rel": float(np.log1p(dl)) / stats["max_log_doc_len"],
         "rank_inv": 1.0 / (rank + 1),
+        "rank_fraction": rank_fraction,
     }
 
 
@@ -113,8 +172,9 @@ def build_rows(sift_url: str, dataset: str, k: int, max_q: int | None = None) ->
     for i, qid in enumerate(qids):
         hits = fetch_candidates(sift_url, dataset, queries[qid], k)
         rel_for_q = qrels[qid]
+        stats = candidate_stats(hits)
         for rank, h in enumerate(hits):
-            row = derive_features(h, rank)
+            row = derive_features(h, rank, stats)
             row["qid"] = f"{dataset}::{qid}"
             row["doc_id"] = h["doc_id"]
             row["label"] = rel_for_q.get(h["doc_id"], 0)
@@ -187,6 +247,29 @@ def baseline_ndcg(X, y, groups, score_col: int = 0, k: int = 10) -> float:
     return per_query_ndcg(X, y, groups, X[:, score_col], k)
 
 
+def blend_scores(
+    tree_scores: np.ndarray,
+    sparse_scores: np.ndarray,
+    groups: list[int],
+    tree_weight: float,
+) -> np.ndarray:
+    """Match Rust's per-query normalization and sparse-score prior."""
+    result = np.empty_like(tree_scores)
+    offsets = np.cumsum([0] + groups)
+    for i in range(len(groups)):
+        start, end = offsets[i], offsets[i + 1]
+        tree = tree_scores[start:end]
+        sparse = sparse_scores[start:end]
+        tree_range = max(float(tree.max() - tree.min()), 1e-6)
+        sparse_range = max(float(sparse.max() - sparse.min()), 1e-6)
+        tree_norm = (tree - tree.min()) / tree_range
+        sparse_norm = (sparse - sparse.min()) / sparse_range
+        result[start:end] = (
+            tree_weight * tree_norm + (1.0 - tree_weight) * sparse_norm
+        )
+    return result
+
+
 # ─── main ──────────────────────────────────────────────────────────────
 
 def main():
@@ -220,34 +303,67 @@ def main():
     Xtr, ytr, gtr, _, _ = to_lgb_inputs(train_split)
     Xv,  yv,  gv,  _, _ = to_lgb_inputs(val_split)
 
-    print("\n[3/4] training LGBMRanker (lambdarank)")
-    model = lgb.LGBMRanker(
-        objective="lambdarank",
-        metric="ndcg",
-        eval_at=[10],
-        n_estimators=args.rounds,
-        learning_rate=0.05,
-        num_leaves=15,
-        min_data_in_leaf=10,
-        feature_fraction=0.9,
-        bagging_fraction=0.9,
-        bagging_freq=5,
-        random_state=args.seed,
-        verbose=-1,
-    )
-    model.fit(
-        Xtr, ytr,
+    print("\n[3/4] training LightGBM LambdaMART")
+    train_set = lgb.Dataset(
+        Xtr,
+        label=ytr,
         group=gtr,
-        eval_set=[(Xv, yv)],
-        eval_group=[gv],
-        eval_at=[10],
+        feature_name=FEATURE_NAMES,
+    )
+    valid_set = lgb.Dataset(
+        Xv,
+        label=yv,
+        group=gv,
+        feature_name=FEATURE_NAMES,
+        reference=train_set,
+    )
+    model = lgb.train(
+        {
+            "objective": "lambdarank",
+            "metric": "ndcg",
+            "eval_at": [10],
+            "learning_rate": 0.05,
+            "num_leaves": 15,
+            "min_data_in_leaf": 10,
+            "feature_fraction": 0.9,
+            "bagging_fraction": 0.9,
+            "bagging_freq": 5,
+            "monotone_constraints": [
+                1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1
+            ],
+            "seed": args.seed,
+            "verbosity": -1,
+        },
+        train_set,
+        num_boost_round=args.rounds,
+        valid_sets=[valid_set],
+        valid_names=["validation"],
         callbacks=[lgb.early_stopping(20)],
     )
 
     print("\n[4/4] evaluation")
+    sparse_col = FEATURE_NAMES.index("retrieval_score_rel")
+    validation_tree_scores = model.predict(Xv, num_iteration=model.best_iteration)
+    weights = (0.0, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0)
+    weight_scores = {
+        weight: per_query_ndcg(
+            Xv,
+            yv,
+            gv,
+            blend_scores(validation_tree_scores, Xv[:, sparse_col], gv, weight),
+        )
+        for weight in weights
+    }
+    tree_weight = max(weights, key=lambda weight: (weight_scores[weight], -weight))
+    print(
+        "  held-out tree weight = "
+        f"{tree_weight:.1f}, NDCG@10 = {weight_scores[tree_weight]:.4f}"
+    )
+
     def show(label, X, y, groups):
-        bm = baseline_ndcg(X, y, groups, score_col=FEATURE_NAMES.index("bm25_combined"))
-        scores = model.predict(X)
+        bm = baseline_ndcg(X, y, groups, score_col=sparse_col)
+        tree_scores = model.predict(X, num_iteration=model.best_iteration)
+        scores = blend_scores(tree_scores, X[:, sparse_col], groups, tree_weight)
         rerank = per_query_ndcg(X, y, groups, scores)
         delta = rerank - bm
         sign = "+" if delta >= 0 else ""
@@ -261,11 +377,18 @@ def main():
         X, y, g, _, _ = to_lgb_inputs(rows)
         show(ds, X, y, g)
 
-    # Save model as LightGBM JSON for Rust inference
-    model.booster_.save_model(args.out, num_iteration=model.best_iteration_)
+    # Rust consumes the structural dump, not LightGBM's native text format.
+    model_dump = model.dump_model(num_iteration=model.best_iteration)
+    model_dump["sift_feature_schema"] = FEATURE_SCHEMA
+    model_dump["sift_tree_weight"] = tree_weight
+    output_path = Path(args.out)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as output:
+        json.dump(model_dump, output)
+        output.write("\n")
     print(f"\nsaved model → {args.out}")
     print(f"feature order: {FEATURE_NAMES}")
-    print(f"best iteration: {model.best_iteration_}")
+    print(f"best iteration: {model.best_iteration}")
 
 
 if __name__ == "__main__":

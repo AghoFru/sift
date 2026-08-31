@@ -35,7 +35,7 @@ DEFAULT_DATA = Path(os.environ.get(
     "SIFT_REGRESSION_DATA",
     str(REPO_ROOT / "tests" / "data"),
 ))
-DEFAULT_WORK = Path("/tmp/sift-beir-eval")
+DEFAULT_WORK = REPO_ROOT / "tests" / ".beir-eval"
 DEFAULT_SETS = "scifact,nfcorpus,fiqa,arguana,scidocs,trec-covid,webis-touche2020,quora"
 PORT = 18098
 K_EVAL = 100  # retrieve depth; nDCG/MRR cut at 10, recall at 100
@@ -110,8 +110,10 @@ def ensure_artifact(bin_path: Path, data_dir: Path, ds: str, work: Path,
 
 
 def start_server(bin_path: Path, artifact_dir: Path, port: int,
-                 serve_args: list[str] | None = None) -> subprocess.Popen:
-    log = open("/tmp/sift_beir_eval_server.log", "w")
+                 serve_args: list[str] | None,
+                 log_path: Path) -> subprocess.Popen:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log = open(log_path, "w")
     proc = subprocess.Popen(
         [str(bin_path), "serve", "--artifacts", str(artifact_dir),
          "--bind", f"127.0.0.1:{port}"] + (serve_args or []),
@@ -147,12 +149,14 @@ def eval_dataset(port: int, data_dir: Path, ds: str, params: dict,
     items = [(qid, rel) for qid, rel in qrels.items() if qid in queries and rel]
     if max_queries:
         items = items[:max_queries]
+    errors: list[dict[str, str]] = []
 
     def one(item):
         qid, rel_map = item
         try:
             r = search(port, ds, queries[qid], params)
-        except Exception:
+        except Exception as error:
+            errors.append({"qid": qid, "error": str(error)})
             return None
         hits = r.get("hits", [])
         rels = [rel_map.get(h["doc_id"], 0) for h in hits]
@@ -160,14 +164,25 @@ def eval_dataset(port: int, data_dir: Path, ds: str, params: dict,
         return (ndcg_at_k(rels), mrr_at_k(rels), recall_at_k(rels, n_rel))
 
     with ThreadPoolExecutor(max_workers=jobs) as ex:
-        rows = [r for r in ex.map(one, items) if r is not None]
+        outcomes = list(ex.map(one, items))
+    rows = [r for r in outcomes if r is not None]
+    failed_queries = len(outcomes) - len(rows)
     if not rows:
-        return {"ndcg_at_10": 0.0, "mrr_at_10": 0.0, "recall_at_100": 0.0, "n_queries": 0}
+        return {
+            "ndcg_at_10": 0.0,
+            "mrr_at_10": 0.0,
+            "recall_at_100": 0.0,
+            "n_queries": 0,
+            "failed_queries": failed_queries,
+            "errors": errors,
+        }
     return {
         "ndcg_at_10": round(statistics.mean(r[0] for r in rows), 4),
         "mrr_at_10": round(statistics.mean(r[1] for r in rows), 4),
         "recall_at_100": round(statistics.mean(r[2] for r in rows), 4),
         "n_queries": len(rows),
+        "failed_queries": failed_queries,
+        "errors": errors,
     }
 
 
@@ -185,6 +200,8 @@ def main() -> int:
                     help="extra `sift serve` flags, e.g. '--reranker model.json'")
     ap.add_argument("--tag", default="", help="label written to the log line")
     ap.add_argument("--log", type=Path, default=DEFAULT_WORK / "results.jsonl")
+    ap.add_argument("--server-log", type=Path,
+                    help="path for the temporary server log")
     ap.add_argument("--jobs", type=int, default=16)
     ap.add_argument("--max-queries", type=int, default=0,
                     help="cap queries per dataset (0 = all)")
@@ -205,7 +222,9 @@ def main() -> int:
     for ds in datasets:
         art_dir = ensure_artifact(args.bin, args.data, ds, args.work_dir,
                                   build_args, args.force_build)
-        proc = start_server(args.bin, art_dir, PORT, shlex.split(args.serve_args))
+        server_log = args.server_log or args.work_dir / "server.log"
+        proc = start_server(args.bin, art_dir, PORT,
+                            shlex.split(args.serve_args), server_log)
         try:
             per_ds[ds] = eval_dataset(PORT, args.data, ds, params, args.jobs, max_q)
         finally:
@@ -213,7 +232,10 @@ def main() -> int:
             proc.wait()
         m = per_ds[ds]
         print(f"  {ds:<18} ndcg={m['ndcg_at_10']:.4f}  mrr={m['mrr_at_10']:.4f}  "
-              f"r@100={m['recall_at_100']:.4f}  ({m['n_queries']} q)")
+              f"r@100={m['recall_at_100']:.4f}  ({m['n_queries']} q, "
+              f"{m['failed_queries']} failed)")
+        for error in m["errors"]:
+            print(f"    failed {error['qid']}: {error['error']}", file=sys.stderr)
 
     mean = {
         k: round(statistics.mean(per_ds[d][k] for d in datasets), 4)

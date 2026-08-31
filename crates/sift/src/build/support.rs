@@ -1,5 +1,59 @@
 // Corpus readers, model decoding, PPMI expansion, and binary writers.
 
+/// Compose each document into a compact order-aware vector.
+///
+/// The vector concatenates a mean pool, an alternating-position pool, and a
+/// position-weighted pool. Static token vectors stay language independent,
+/// while the extra pools preserve a small amount of token order.
+fn build_composition_vectors(
+    tokenized: &[Vec<u32>],
+    stop_mask: &[u8],
+    embeddings: &[Vec<f32>],
+    emb_dim: usize,
+) -> Vec<f16> {
+    let output_dim = emb_dim * 3;
+    let mut output = Vec::with_capacity(tokenized.len() * output_dim);
+    for tokens in tokenized {
+        let mut vector = vec![0.0f32; output_dim];
+        let mut count = 0usize;
+        for &tid in tokens {
+            if stop_mask[tid as usize] == 1 {
+                continue;
+            }
+            let embedding = &embeddings[tid as usize];
+            let sign = if count % 2 == 0 { 1.0 } else { -1.0 };
+            let position_weight = (count + 1) as f32;
+            for (dim, &value) in embedding.iter().enumerate() {
+                vector[dim] += value;
+                vector[emb_dim + dim] += sign * value;
+                vector[2 * emb_dim + dim] += position_weight * value;
+            }
+            count += 1;
+        }
+        if count > 0 {
+            let count_f = count as f32;
+            for value in &mut vector[..emb_dim] {
+                *value /= count_f;
+            }
+            for value in &mut vector[emb_dim..2 * emb_dim] {
+                *value /= count_f;
+            }
+            let count_squared = count_f * count_f;
+            for value in &mut vector[2 * emb_dim..] {
+                *value /= count_squared;
+            }
+            let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                for value in &mut vector {
+                    *value /= norm;
+                }
+            }
+        }
+        output.extend(vector.into_iter().map(f16::from_f32));
+    }
+    output
+}
+
 /// Build corpus-fitted expansion edges from term co-occurrence PPMI.
 ///
 /// Counts nearby terms, scores pairs with positive pointwise mutual

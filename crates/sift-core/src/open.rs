@@ -72,6 +72,9 @@ impl Index {
         let mm_qexp_indptr = mm("qexp_indptr.bin").ok();
         let mm_qexp_terms = mm("qexp_terms.bin").ok();
         let mm_qexp_sims = mm("qexp_sims.bin").ok();
+        let mm_composition_term_ids = mm("composition_term_ids.bin").ok();
+        let mm_composition_terms = mm("composition_terms.bin").ok();
+        let mm_composition_docs = mm("composition_docs.bin").ok();
         let mm_dedup = mm("dedup_canonical.bin").ok();
         let mm_block_max_indptr = mm("block_max_indptr.bin").ok();
         let mm_block_max = mm("block_max.bin").ok();
@@ -247,6 +250,18 @@ impl Index {
             .as_ref()
             .map(|m| static_cast::<f32>(m))
             .transpose()?;
+        let composition_term_ids: Option<&'static [u32]> = mm_composition_term_ids
+            .as_ref()
+            .map(|m| static_cast::<u32>(m))
+            .transpose()?;
+        let composition_terms: Option<&'static [half::f16]> = mm_composition_terms
+            .as_ref()
+            .map(|m| static_cast::<half::f16>(m))
+            .transpose()?;
+        let composition_docs: Option<&'static [half::f16]> = mm_composition_docs
+            .as_ref()
+            .map(|m| static_cast::<half::f16>(m))
+            .transpose()?;
         let dedup_canonical: Option<&'static [u8]> = mm_dedup.as_ref().map(|m| static_bytes(m));
         let block_max_indptr: Option<&'static [u64]> = mm_block_max_indptr
             .as_ref()
@@ -312,6 +327,28 @@ impl Index {
         if doc_ids_off.len() != n + 1 || doc_snips_off.len() != n + 1 {
             return Err(anyhow!("doc_ids_off / doc_snips_off length mismatch"));
         }
+        let composition_files = [
+            composition_term_ids.is_some(),
+            composition_terms.is_some(),
+            composition_docs.is_some(),
+        ];
+        if composition_files.iter().any(|&present| present) {
+            if composition_files.iter().any(|&present| !present) {
+                return Err(anyhow!("composition sidecar is incomplete"));
+            }
+            let dim = meta.composition_dim as usize;
+            if dim == 0 || dim % 3 != 0 {
+                return Err(anyhow!("invalid composition dimension {dim}"));
+            }
+            if composition_terms.unwrap().len() != composition_term_ids.unwrap().len() * (dim / 3) {
+                return Err(anyhow!("composition term vector length mismatch"));
+            }
+            if composition_docs.unwrap().len() != n * dim {
+                return Err(anyhow!("composition document vector length mismatch"));
+            }
+        } else if meta.composition_dim != 0 {
+            return Err(anyhow!("composition metadata has no sidecar"));
+        }
 
         Ok(Index {
             meta,
@@ -343,6 +380,9 @@ impl Index {
             _mm_qexp_indptr: mm_qexp_indptr,
             _mm_qexp_terms: mm_qexp_terms,
             _mm_qexp_sims: mm_qexp_sims,
+            _mm_composition_term_ids: mm_composition_term_ids,
+            _mm_composition_terms: mm_composition_terms,
+            _mm_composition_docs: mm_composition_docs,
             _mm_dedup: mm_dedup,
             _mm_block_max_indptr: mm_block_max_indptr,
             _mm_block_max: mm_block_max,
@@ -381,6 +421,9 @@ impl Index {
             qexp_indptr,
             qexp_terms,
             qexp_sims,
+            composition_term_ids,
+            composition_terms,
+            composition_docs,
             dedup_canonical,
             block_max_indptr,
             block_max,
