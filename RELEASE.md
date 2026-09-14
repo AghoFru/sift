@@ -13,14 +13,14 @@ cargo build --workspace --release --locked
 cargo package -p sift-core --locked
 cargo package -p sift --locked --no-verify
 cargo package -p sift-ffi --locked --no-verify
-python3 -m compileall -q sift_build tests
-bash -n tests/*.sh
+bash -n examples/android/build.sh
 ```
 
 Run the CLI and HTTP contract checks with a local static model:
 
 ```bash
-SIFT_MODEL=/path/to/model python3 -W error tests/product_contract.py -v
+SIFT_BIN="$PWD/target/release/sift" cargo run -p sift --example product_contract --locked -- \
+  /path/to/model
 ```
 
 Run the Rust, C, and Android checks in the [embedding guide](docs/EMBEDDING.md).
@@ -32,7 +32,7 @@ binary path, model path, build arguments, and query parameters:
 
 ```bash
 cd /path/to/ir-bench
-python3 -m ir_bench.run --adapter ir_bench.adapters:Sift \
+ir-bench run --adapter sift \
   --config work/sift.json --dataset work/data/scifact --output work/scifact-result.json
 ```
 

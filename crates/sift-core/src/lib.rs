@@ -2,7 +2,7 @@
 //!
 //! The artifact is a directory of plain little-endian binary files, each a
 //! flat array of one of: `u8`, `u32`, `u64`, `f32`. We mmap them and reinterpret
-//! the bytes - the layout is defined by `sift_build` and is single-version.
+//! the bytes. The Rust builder writes the versioned artifact layout.
 //!
 //! Scoring is the standard BM25 sum, but executed over the **already-expanded**
 //! sparse `[V × N]` matrix. Each query token's row already contains the

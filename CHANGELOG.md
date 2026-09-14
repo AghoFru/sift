@@ -6,6 +6,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Removed the legacy Python builder and its package. Rust is the only product implementation.
+- Moved retrieval experiments to IR Bench and replaced Python test and packaging tools.
 - Added the embedded `Engine` API and routed CLI and HTTP operations through shared code.
 - Added a C interface and an Android offline search example.
 - Moved reusable retrieval evaluation and training tools to the independent IR Bench repository.

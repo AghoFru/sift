@@ -321,9 +321,7 @@ curl -sX POST localhost:8080/search \
 
 ```
 sift/
-├── pyproject.toml      Python reference indexer (parity oracle)
 ├── Cargo.toml          Rust workspace
-├── sift_build/         Python reference impl, same artifact shape
 ├── crates/
 │   ├── sift-core/      library: mmap an artifact, score it
 │   ├── sift/           embedded Engine API and CLI/HTTP adapters
@@ -331,13 +329,11 @@ sift/
 └── artifacts/          built *.sift directories (gitignored)
 ```
 
-A legacy Python reference indexer ships in `sift_build/`. `tests/parity_test.sh`
-builds both implementations with an explicitly compatible configuration and
-verifies retrieval matches on a canonical query set. The Rust builder is the
-production implementation and source of truth for defaults.
+The Rust builder is the only product indexer. The Rust `product_contract` example
+checks CLI and HTTP behavior with a local model. Retrieval experiments and the
+dataset and engine comparison harness live in [IR Bench](https://github.com/AghoFru/ir-bench).
 
 See the [embedding guide](EMBEDDING.md) for Rust, C, and Android examples.
-Reusable retrieval evaluation and training tools live in the separate IR Bench repository.
 
 ## Optional reranking
 
