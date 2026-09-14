@@ -1,9 +1,9 @@
 # Sift
 
-**Fast, CPU-only semantic search.**
+**Fast, CPU-only hybrid search.**
 
-Sift finds related terms as well as exact matches, with no model inference or
-network connection at query time.
+Sift combines exact keyword matching with semantic term expansion in one index.
+Search runs offline, with no model inference at query time.
 
 ## Get started
 
@@ -27,6 +27,22 @@ To search your own documents, replace the input with a JSONL file:
 
 - [Embed with Rust or C, including an Android example](docs/EMBEDDING.md).
 - [Run an HTTP service, update documents, and configure search](docs/REFERENCE.md).
-- [Compare retrieval quality with IR Bench](https://github.com/AghoFru/ir-bench).
+
+## Performance
+
+SciFact: 5,183 documents, 300 queries, Apple M1 Ultra, CPU only.
+Higher nDCG@10 means better relevance. Lower latency is better.
+
+| System | nDCG@10 | Median query latency |
+|---|---:|---:|
+| Sift | 0.696 | 0.75 ms |
+| BM25 (Terrier) | 0.684 | 4.20 ms |
+| BGE-small | 0.713 | 15.17 ms |
+| SPLADE | 0.708 | 37.41 ms |
+| Weaviate hybrid (E5 + BM25) | 0.723 | 20.82 ms |
+
+Top-100 query latency includes encoding and adapter overhead, including HTTP where used.
+These results cover one query at a time on small English datasets.
+See [full comparisons, test settings, and reproduction steps](https://github.com/AghoFru/ir-bench/tree/main/results/sift-cpu).
 
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Apache-2.0](LICENSE)
