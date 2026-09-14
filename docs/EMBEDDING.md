@@ -80,8 +80,7 @@ adb -s DEVICE_SERIAL uninstall org.sift.example
 ```
 
 Success prints `SIFT_OFFLINE_OK`. Remove an old installation before installing
-a new build, because signing keys are disposable. This checks ARM64 offline
-search, not mobile indexing or performance.
+a new build, because signing keys are disposable.
 
 ## Storage rules
 
@@ -90,7 +89,6 @@ search, not mobile indexing or performance.
 - Open handles retain snapshots. Call `reload()` to see another handle's writes.
 - Competing writers receive a lock error. Writes through an engine reload that engine.
 - Writes are not transactions across files or with your database. After failure, inspect and reload before retrying.
-- Legacy segments without stored source documents cannot compact.
+- Compaction requires stored source documents.
 
 See [query restrictions](REFERENCE.md#http-search) before using optional features.
-Native integration checks cover macOS ARM64 and Android ARM64 emulation.

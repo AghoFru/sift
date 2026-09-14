@@ -31,8 +31,4 @@ Your own corpus uses one JSON document per line:
 - **Configure:** [HTTP requests, updates, and search options](docs/REFERENCE.md).
 - **Evaluate:** [IR Bench](https://github.com/AghoFru/ir-bench).
 
-An index is a directory. Sift is single-node and does not provide database
-transactions. Semantic expansion can introduce irrelevant matches, so evaluate
-it on your own documents and queries.
-
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Apache-2.0](LICENSE)
