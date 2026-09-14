@@ -29,14 +29,14 @@ index.delete(&["1".to_owned()])?;
 
 Use `Engine::open(path)` to reopen an index. For JSONL input, use
 `Engine::build(BuildOptions::new(input, output))`.
-The [executable example](../crates/sift/examples/embedded.rs) also covers compaction and reload:
+Run the [complete Rust example](../crates/sift/examples/embedded.rs):
 
 ```sh
 cargo run -p sift --example embedded --no-default-features --locked -- \
   /path/to/model target/embedded-check
 ```
 
-Use a new output directory for each check.
+Use a new output directory for each run.
 
 ## C
 
@@ -60,8 +60,7 @@ target/c-api-check /path/to/model target/c-api-index
 - Read `sift_last_error` before another fallible call on the same thread. Do not free this borrowed string.
 - After `SIFT_PANIC`, close and reopen the handle.
 
-Calls on one handle serialize. Limits: 4096 path bytes, 64 MiB of JSON, and
-100,000 documents per write. Invalid pointers remain the caller's responsibility.
+Calls on one handle serialize.
 
 ## Android
 
@@ -69,7 +68,7 @@ The [JNI example](../examples/android/OfflineCheck.java) searches a packaged
 index without internet permission. It requires JDK 17, SDK platform 36,
 build tools 36.0.0, NDK r28, and the Rust `aarch64-linux-android` target.
 
-Use the index produced by the C check. Build on macOS or Linux:
+Use the index produced by the C example. Build on macOS or Linux:
 
 ```sh
 bash examples/android/build.sh target/c-api-index \
