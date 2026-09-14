@@ -1,8 +1,9 @@
 //! `sift search` - one-shot CLI search against a single `.sift` index.
 
+use crate::query::SearchSyntax;
+use crate::{Engine, SearchOptions};
 use anyhow::{Context, Result};
 use clap::Args;
-use sift_core::{IndexSet, ScoreMode};
 use std::path::PathBuf;
 
 #[derive(Args, Debug)]
@@ -51,70 +52,47 @@ fn parse_composition_weight(raw: &str) -> Result<f32, String> {
 }
 
 pub fn run(args: SearchArgs) -> Result<()> {
-    let set =
-        IndexSet::open(&args.index).with_context(|| format!("opening {}", args.index.display()))?;
-
-    // Single-segment: score the one artifact directly. Multi-segment: merge.
-    if set.is_single() {
-        let idx = set.primary();
-        let tokens = idx.tokenize_query(&args.query);
-        if tokens.is_empty() {
-            eprintln!("(no content tokens in query)");
-            return Ok(());
-        }
-        let r = if args.composition_weight > 0.0 {
-            let ordered_tokens = idx.tokenize_query_keep_order(&args.query);
-            idx.score_blended_qexp_compositional(
-                &tokens,
-                &ordered_tokens,
-                args.k,
-                args.semantic_weight,
-                &[],
-                args.composition_weight,
-            )
-        } else {
-            idx.score_blended(&tokens, args.k, args.semantic_weight)
-        };
+    let engine =
+        Engine::open(&args.index).with_context(|| format!("opening {}", args.index.display()))?;
+    let single = engine.entry.set.is_single();
+    if single && engine.entry.idx().tokenize_query(&args.query).is_empty() {
+        eprintln!("(no content tokens in query)");
+        return Ok(());
+    }
+    let result = engine.search(SearchOptions {
+        q: args.query,
+        k: args.k,
+        syntax: SearchSyntax::Terms,
+        blend_alpha: args.semantic_weight,
+        composition_weight: args.composition_weight,
+        ..SearchOptions::default()
+    })?;
+    if single {
         println!(
             "# {} hits  matched_terms={}  latency={}µs",
-            r.hits.len(),
-            r.matched_query_terms,
-            r.elapsed_us
+            result.hits.len(),
+            result.matched_terms,
+            result.latency_us
         );
-        for h in &r.hits {
-            let id = idx.doc_id(h.doc_idx as usize);
-            if args.snippets {
-                let snip = idx.doc_snip(h.doc_idx as usize);
-                println!("{:>8.3}  {}  {}", h.score, id, truncate(snip, 200));
-            } else {
-                println!("{:>8.3}  {}", h.score, id);
-            }
-        }
     } else {
-        if args.composition_weight > 0.0 {
-            anyhow::bail!(
-                "composition reranking requires a single segment; run `sift compact` first"
-            );
-        }
-        let r = set.search_merged(&args.query, args.k, ScoreMode::Plain, args.semantic_weight);
         println!(
             "# {} hits  matched_terms={}  latency={}µs  ({} segments)",
-            r.hits.len(),
-            r.matched_query_terms,
-            r.elapsed_us,
-            set.n_segments()
+            result.hits.len(),
+            result.matched_terms,
+            result.latency_us,
+            engine.entry.set.n_segments()
         );
-        for h in &r.hits {
-            if args.snippets {
-                println!(
-                    "{:>8.3}  {}  {}",
-                    h.score,
-                    h.doc_id,
-                    truncate(&h.snippet, 200)
-                );
-            } else {
-                println!("{:>8.3}  {}", h.score, h.doc_id);
-            }
+    }
+    for hit in result.hits {
+        if args.snippets {
+            println!(
+                "{:>8.3}  {}  {}",
+                hit.score,
+                hit.doc_id,
+                truncate(&hit.snippet, 200)
+            );
+        } else {
+            println!("{:>8.3}  {}", hit.score, hit.doc_id);
         }
     }
     Ok(())

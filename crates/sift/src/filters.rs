@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
-pub(crate) struct FilterClause {
+pub struct FilterClause {
     pub field: String,
     #[serde(default)]
     pub lt: Option<f32>,

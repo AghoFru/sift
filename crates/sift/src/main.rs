@@ -8,13 +8,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod build;
-mod clean;
-mod index_cmd;
-mod replicate;
-mod search;
-mod serve;
-mod spell;
+#[cfg(feature = "server")]
+use sift::serve;
+use sift::{build, index_cmd, replicate, search};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -33,6 +29,7 @@ enum Cmd {
     /// Build a `.sift` index from a JSONL corpus.
     Build(build::BuildArgs),
     /// Serve one or more `.sift` indices over HTTP.
+    #[cfg(feature = "server")]
     Serve(serve::ServeArgs),
     /// One-shot CLI search against a single `.sift` index.
     Search(search::SearchArgs),
@@ -49,7 +46,8 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Build(a) => build::run(a),
+        Cmd::Build(a) => sift::Engine::build(a).map(|_| ()),
+        #[cfg(feature = "server")]
         Cmd::Serve(a) => serve::run(a),
         Cmd::Search(a) => search::run(a),
         Cmd::Add(a) => index_cmd::run_add(a),

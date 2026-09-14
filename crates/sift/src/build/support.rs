@@ -141,6 +141,10 @@ fn load_model_files(repo_or_path: &str) -> Result<(PathBuf, Vec<u8>)> {
     let (tok_path, mdl_path) = if p.exists() {
         (p.join("tokenizer.json"), p.join("model.safetensors"))
     } else {
+        #[cfg(not(feature = "download"))]
+        anyhow::bail!("A local model directory is required when model downloads are disabled.");
+        #[cfg(feature = "download")]
+        {
         let api = Api::new().context("hf-hub init")?;
         let repo = api.model(repo_or_path.to_string());
         let t = repo
@@ -150,6 +154,7 @@ fn load_model_files(repo_or_path: &str) -> Result<(PathBuf, Vec<u8>)> {
             .get("model.safetensors")
             .context("downloading model.safetensors")?;
         (t, m)
+        }
     };
     let bytes = fs::read(&mdl_path).with_context(|| format!("reading {}", mdl_path.display()))?;
     Ok((tok_path, bytes))

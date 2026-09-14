@@ -14,6 +14,7 @@
 use anyhow::{anyhow, Context, Result};
 use clap::Args;
 use half::f16;
+#[cfg(feature = "download")]
 use hf_hub::api::sync::Api;
 use safetensors::{tensor::Dtype, SafeTensors};
 use serde::Serialize;
@@ -30,6 +31,8 @@ use sift_core::SCHEMA_VERSION;
 const SPECIAL: &[&str] = &["[CLS]", "[SEP]", "[PAD]", "[UNK]", "[MASK]"];
 
 include!("build/config.rs");
+mod recipe;
+pub(crate) use recipe::{build_args_from, build_args_to_argv};
 
 pub fn run(args: BuildArgs) -> Result<()> {
     println!("[1/6] loading model {}", args.model);
@@ -41,6 +44,18 @@ pub fn run(args: BuildArgs) -> Result<()> {
 /// documents from `args.input` and writing to `args.output`. This is the shared
 /// core of `sift build`, `sift add`, and the server's live write path.
 pub fn run_with_model(args: BuildArgs, model: &Model) -> Result<()> {
+    #[cfg(feature = "multithread")]
+    if args.threads > 0 {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(args.threads)
+            .build()
+            .context("Creating the build thread pool.")?;
+        return pool.install(|| build_segment(args, model));
+    }
+    build_segment(args, model)
+}
+
+fn build_segment(args: BuildArgs, model: &Model) -> Result<()> {
     let t_total = Instant::now();
 
     let out: PathBuf = args
@@ -48,14 +63,6 @@ pub fn run_with_model(args: BuildArgs, model: &Model) -> Result<()> {
         .clone()
         .filter(|p| !p.as_os_str().is_empty())
         .ok_or_else(|| anyhow!("--out is required"))?;
-
-    #[cfg(feature = "multithread")]
-    if args.threads > 0 {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(args.threads)
-            .build_global()
-            .ok();
-    }
 
     fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
 
@@ -1010,9 +1017,6 @@ pub fn run_with_model(args: BuildArgs, model: &Model) -> Result<()> {
 
     // tokenizer.json (copy file we already have on disk)
     fs::copy(tokenizer_path, out.join("tokenizer.json")).context("copying tokenizer.json")?;
-    // Flush the whole segment to stable storage so a write that gets ack'd
-    // (after the manifest commit that references this segment) is durable.
-    sift_core::fsync_dir_contents(&out).context("fsync segment")?;
     println!("      write {:.2}s", t0.elapsed().as_secs_f64());
 
     let meta = Meta {
@@ -1040,6 +1044,8 @@ pub fn run_with_model(args: BuildArgs, model: &Model) -> Result<()> {
         composition_dim,
     };
     fs::write(out.join("meta.json"), serde_json::to_string_pretty(&meta)?)?;
+    // The metadata must reach storage before a manifest can reference this segment.
+    sift_core::fsync_dir_contents(&out).context("Synchronizing the segment.")?;
 
     println!(
         "      done: {n} docs, {nnz} postings, total {:.1}s",

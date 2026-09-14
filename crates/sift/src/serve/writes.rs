@@ -11,7 +11,6 @@ use axum::{
     response::{IntoResponse, Json as RespJson, Response},
 };
 use serde::{Deserialize, Serialize};
-use sift_core::{add_tombstones, next_segment_name, Manifest, SegmentRef};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -50,14 +49,6 @@ struct WriteResp {
     generation: u64,
     /// Docs added (for /add) or ids newly tombstoned (for /delete).
     affected: usize,
-}
-
-/// Render a JSON id value (string or number) to the canonical string id.
-fn json_to_id(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
 }
 
 /// Re-open `path` and atomically replace the in-memory entry for `name`.
@@ -150,6 +141,17 @@ pub(crate) async fn add_docs(
         return Err((StatusCode::BAD_REQUEST, "no docs provided".into()));
     }
     let name = req.index.clone();
+    if name.is_empty()
+        || name.len() > 128
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\'])
+        || name.chars().any(char::is_control)
+    {
+        return Err((StatusCode::BAD_REQUEST, "Invalid index name.".into()));
+    }
+    let jsonl = crate::write::encode_documents(&req.docs)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
     let existing = { state.indices.read().unwrap().get(&name).cloned() };
     let index_dir = existing
         .as_ref()
@@ -164,68 +166,21 @@ pub(crate) async fn add_docs(
     };
     let model = get_model(&state, &model_name).await?;
 
-    // Validate + serialize the posted docs to JSONL now so a bad payload fails
-    // fast, before we touch the index.
-    let mut jsonl = String::new();
-    let mut ids: Vec<String> = Vec::with_capacity(req.docs.len());
-    for (i, d) in req.docs.iter().enumerate() {
-        let obj = d.as_object().ok_or((
-            StatusCode::BAD_REQUEST,
-            format!("doc {i} must be a JSON object"),
-        ))?;
-        let id = obj
-            .get("id")
-            .map(json_to_id)
-            .ok_or((StatusCode::BAD_REQUEST, format!("doc {i} missing 'id'")))?;
-        if obj.get("text").and_then(|v| v.as_str()).is_none() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("doc {i} missing string 'text'"),
-            ));
-        }
-        // Store the whole document as the payload (all fields preserved); coerce
-        // `id` to a string so the builder parses it.
-        let mut row = obj.clone();
-        row.insert("id".to_string(), serde_json::Value::String(id.clone()));
-        jsonl.push_str(&serde_json::Value::Object(row).to_string());
-        jsonl.push('\n');
-        ids.push(id);
-    }
     let added = req.docs.len();
-    let upsert = req.upsert;
+    let mode = if req.upsert {
+        crate::WriteMode::Upsert
+    } else {
+        crate::WriteMode::Insert
+    };
 
     let _guard = state.write_lock.lock().await;
     let path = index_dir.clone();
     let mname = model_name.clone();
     let model2 = model.clone();
     let built = tokio::task::spawn_blocking(move || -> Result<(u64, usize), String> {
-        let mut manifest = Manifest::ensure(&path).map_err(|e| e.to_string())?;
-        let seg_name = next_segment_name(&path).map_err(|e| e.to_string())?;
-        let ordinal = sift_core::parse_seg_ordinal(&seg_name);
-        let seg_dir = path.join(&seg_name);
-        std::fs::create_dir_all(&seg_dir).map_err(|e| e.to_string())?;
-        let src = seg_dir.join("source.jsonl");
-        std::fs::write(&src, jsonl.as_bytes()).map_err(|e| e.to_string())?;
-        let recipe = vec![
-            "--model".to_string(),
-            mname.clone(),
-            "--block-max".to_string(),
-        ];
-        let args = crate::index_cmd::build_args_from(&src, &seg_dir, &recipe)
-            .map_err(|e| e.to_string())?;
-        crate::build::run_with_model(args, &model2).map_err(|e| e.to_string())?;
-        manifest.segments.push(SegmentRef {
-            dir: seg_name,
-            source: Some(src.display().to_string()),
-            build_args: recipe,
-        });
-        manifest.generation += 1;
-        manifest.write(&path).map_err(|e| e.to_string())?;
-        // Upsert: supersede older copies of these ids (dead below this segment).
-        if upsert {
-            add_tombstones(&path, &ids, ordinal).map_err(|e| e.to_string())?;
-        }
-        Ok((manifest.generation, manifest.segments.len()))
+        let outcome = crate::write::append_documents(&path, &jsonl, &mname, &model2, mode)
+            .map_err(|error| error.to_string())?;
+        Ok((outcome.generation, outcome.segments))
     })
     .await
     .map_err(|e| {
@@ -268,12 +223,8 @@ pub(crate) async fn delete_docs(
     let path = index_dir.clone();
     let ids = req.ids.clone();
     let done = tokio::task::spawn_blocking(move || -> Result<(u64, usize, usize), String> {
-        let mut manifest = Manifest::ensure(&path).map_err(|e| e.to_string())?;
-        let added =
-            add_tombstones(&path, &ids, sift_core::TOMBSTONE_ALL).map_err(|e| e.to_string())?;
-        manifest.generation += 1;
-        manifest.write(&path).map_err(|e| e.to_string())?;
-        Ok((manifest.generation, manifest.segments.len(), added))
+        let outcome = crate::Engine::delete_from(&path, &ids).map_err(|error| error.to_string())?;
+        Ok((outcome.generation, outcome.segments, outcome.affected))
     })
     .await
     .map_err(|e| {
