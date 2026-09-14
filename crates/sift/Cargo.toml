@@ -12,11 +12,15 @@ description = "CPU-first semantic sparse search engine."
 [[bin]]
 name = "sift"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [features]
-default = ["multithread"]
+default = ["cli", "server", "download", "multithread"]
+cli = ["dep:ureq"]
+server = ["dep:axum", "dep:tokio", "dep:tower-http", "dep:tracing-subscriber", "cli"]
+download = ["dep:hf-hub"]
 # Edge profile: single-threaded, no rayon, smaller binary, lower peak power.
-edge = []
+edge = ["cli", "server", "download"]
 # Multithreaded build & scoring (default for cloud/dev).
 multithread = ["dep:rayon"]
 # Optional ONNX cross-encoder reranker (`serve --cross-encoder <dir>`).
@@ -26,25 +30,26 @@ cross-encoder = ["dep:ort"]
 
 [dependencies]
 sift-core = { version = "0.1.0", path = "../sift-core" }
-axum.workspace = true
-tokio.workspace = true
-tower-http.workspace = true
+axum = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 tokenizers.workspace = true
 
 clap = { version = "4", features = ["derive", "env"] }
 rayon = { version = "1.10", optional = true }
 ort = { version = "2.0.0-rc.10", optional = true }
-hf-hub = "0.4.3"
-ureq = { version = "2.12", features = ["json"] }
+hf-hub = { version = "0.4.3", optional = true }
+ureq = { version = "2.12", features = ["json"], optional = true }
 safetensors = "0.4"
 half = { version = "2", features = ["bytemuck"] }
 ahash = "0.8"
 lru = "0.12"
+fs2 = "0.4.3"
 
 [dev-dependencies]
 hegeltest = "0.15.2"

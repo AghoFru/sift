@@ -15,39 +15,13 @@
 //!   - `writes`  live write path (/add, /delete, /compact)
 
 mod admin;
-#[cfg(feature = "cross-encoder")]
-mod ce;
-mod filters;
 mod query;
-mod query_negation;
 mod replicate_srv;
-mod rerank;
 mod writes;
 
-/// Stub so the rest of the server compiles identically without the
-/// cross-encoder feature; loading reports the missing feature.
-#[cfg(not(feature = "cross-encoder"))]
-mod ce {
-    use anyhow::{anyhow, Result};
-    use std::path::Path;
-
-    pub(crate) struct CrossEncoder;
-
-    impl CrossEncoder {
-        pub(crate) fn load(_dir: &Path, _threads: usize, _max_len: usize) -> Result<Self> {
-            Err(anyhow!(
-                "this binary was built without the cross-encoder feature \
-                 (rebuild with --features cross-encoder)"
-            ))
-        }
-
-        pub(crate) fn score_pairs(&self, _q: &str, _docs: &[String]) -> Result<Vec<f32>> {
-            Ok(Vec::new())
-        }
-    }
-}
-
 use crate::build::Model;
+use crate::engine::{make_entry, IndexEntry, SearchContext, SlowEntry};
+use crate::{ce, rerank};
 use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::http::Request;
@@ -61,77 +35,17 @@ use axum::{
 };
 use clap::Args;
 use serde::Serialize;
-use sift_core::{Index, IndexSet, Manifest};
+use sift_core::Manifest;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::{
-    atomic::{AtomicU64, Ordering as AtomicOrdering},
-    Arc, Mutex, RwLock,
-};
+use std::sync::{atomic::Ordering as AtomicOrdering, Arc, Mutex, RwLock};
 use std::time::Instant;
 use tokio::sync::Mutex as AsyncMutex;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-
-#[derive(Clone)]
-pub(crate) struct CachedSearch {
-    pub(crate) matched_terms: u32,
-    pub(crate) total: usize,
-    pub(crate) hits: Vec<query::SearchHit>,
-    pub(crate) spell_corrected: Option<String>,
-}
-
-/// A single entry in the rolling slow-query buffer.
-#[derive(Clone, Serialize)]
-pub(crate) struct SlowEntry {
-    /// Seconds since UNIX epoch when the query was served.
-    pub(crate) ts: u64,
-    /// The effective query string (after spell correction, if any).
-    pub(crate) q: String,
-    /// Total request latency (server-side) in microseconds.
-    pub(crate) latency_us: u64,
-    /// Score-pass latency reported by the scoring function in microseconds.
-    pub(crate) score_us: u64,
-    /// Number of hits returned.
-    pub(crate) n_hits: usize,
-    /// Top-K bound the request asked for.
-    pub(crate) k: usize,
-}
-
-pub(crate) struct IndexEntry {
-    /// One or more immutable segments plus a tombstone set. Single-segment
-    /// indices (the common case) expose the full single-`Index` feature set via
-    /// [`IndexEntry::idx`]; multi-segment indices are served through the merged
-    /// path in `query::search`.
-    pub(crate) set: IndexSet,
-    /// On-disk path of the .sift directory, kept so /reload can re-open it.
-    pub(crate) path: PathBuf,
-    /// Rolling last-K query latencies in microseconds (for /stats).
-    pub(crate) latencies_us: Mutex<Vec<u64>>,
-    /// LRU result cache. Key is the hash of the request shape. Bypassed
-    /// when the request opts out via `"cache": false`.
-    pub(crate) cache: Mutex<lru::LruCache<u64, CachedSearch>>,
-    /// Rolling buffer of slow-query metadata for /failures. Capped to keep
-    /// memory bounded under load; oldest entries get evicted.
-    pub(crate) slow_log: Mutex<std::collections::VecDeque<SlowEntry>>,
-    /// Counters for /metrics. Atomic to avoid contention on the hot path.
-    pub(crate) queries_total: AtomicU64,
-    pub(crate) cache_hits: AtomicU64,
-    pub(crate) slow_queries: AtomicU64,
-}
-
-impl IndexEntry {
-    /// The primary (and, for single-segment indices, only) segment. Callers in
-    /// the rich single-segment query path use this after confirming
-    /// `self.set.is_single()`.
-    pub(crate) fn idx(&self) -> &Index {
-        self.set.primary()
-    }
-}
 
 struct RateBucket {
     tokens: f64,
@@ -146,7 +60,6 @@ pub(crate) struct AppState {
     /// /reload to locate an index by name on disk.
     pub(crate) artifacts_dir: PathBuf,
     pub(crate) default: String,
-    pub(crate) slow_query_us: u64,
     /// When `Some`, every protected request must present
     /// `Authorization: Bearer <one-of-these>`. When `None`, auth is disabled.
     api_keys: Option<HashSet<String>>,
@@ -172,14 +85,7 @@ pub(crate) struct AppState {
     pub(crate) write_lock: AsyncMutex<()>,
     /// Auto-compact an index once it exceeds this many segments (0 disables).
     pub(crate) compact_threshold: usize,
-    /// Optional GBDT reranker (LightGBM dump_model JSON), applied to the
-    /// top-K of /search by default when loaded (`"rerank": false` opts out).
-    pub(crate) reranker: Option<Arc<rerank::GbdtModel>>,
-    /// Optional ONNX cross-encoder. Takes precedence over the GBDT model
-    /// when both are loaded; same `"rerank": false` opt-out.
-    pub(crate) cross_encoder: Option<Arc<ce::CrossEncoder>>,
-    /// How many top candidates the cross-encoder rescores per query.
-    pub(crate) ce_depth: usize,
+    pub(crate) search_context: SearchContext,
 }
 
 /// Walk one hop through the alias map: "production" → "scifact-v3".
@@ -313,22 +219,6 @@ async fn auth_layer(
     }
 
     next.run(req).await
-}
-
-/// Build a fresh `IndexEntry` from an index directory (fresh stats + cache; the
-/// cache must reset on every write so stale results can't survive a mutation).
-pub(crate) fn make_entry(path: &Path) -> Result<IndexEntry, String> {
-    let set = IndexSet::open(path).map_err(|e| format!("opening {}: {e}", path.display()))?;
-    Ok(IndexEntry {
-        set,
-        path: path.to_path_buf(),
-        latencies_us: Mutex::new(Vec::with_capacity(1024)),
-        cache: Mutex::new(lru::LruCache::new(NonZeroUsize::new(1024).unwrap())),
-        slow_log: Mutex::new(std::collections::VecDeque::with_capacity(128)),
-        queries_total: AtomicU64::new(0),
-        cache_hits: AtomicU64::new(0),
-        slow_queries: AtomicU64::new(0),
-    })
 }
 
 pub(crate) fn discover_artifacts(root: &PathBuf) -> Result<HashMap<String, IndexEntry>> {
@@ -500,6 +390,13 @@ async fn run_async(args: ServeArgs) -> Result<()> {
     if !args.read_only {
         for (name, entry) in indices.iter() {
             if entry.path.join("manifest.json").exists() {
+                let _guard = match crate::write::WriteGuard::acquire(&entry.path) {
+                    Ok(guard) => guard,
+                    Err(error) => {
+                        tracing::warn!("Skipping orphan recovery for '{name}': {error}");
+                        continue;
+                    }
+                };
                 if let Ok(m) = Manifest::read(&entry.path) {
                     match sift_core::recover_orphans(&entry.path, &m) {
                         Ok(n) if n > 0 => {
@@ -589,7 +486,6 @@ async fn run_async(args: ServeArgs) -> Result<()> {
         indices: RwLock::new(indices),
         artifacts_dir: args.artifacts.clone(),
         default,
-        slow_query_us: args.slow_query_us,
         api_keys,
         rate_qps,
         rate_burst,
@@ -600,9 +496,12 @@ async fn run_async(args: ServeArgs) -> Result<()> {
         models: RwLock::new(HashMap::new()),
         write_lock: AsyncMutex::new(()),
         compact_threshold: args.compact_threshold,
-        reranker,
-        cross_encoder,
-        ce_depth: args.ce_depth.clamp(10, 500),
+        search_context: SearchContext {
+            reranker,
+            cross_encoder,
+            slow_query_us: args.slow_query_us,
+            ce_depth: args.ce_depth.clamp(10, 500),
+        },
     });
     if state.read_only {
         tracing::info!("read-only mode: write/admin routes are not mounted (search-only)");

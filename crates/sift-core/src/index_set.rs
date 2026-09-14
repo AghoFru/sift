@@ -88,29 +88,43 @@ impl Manifest {
             return Manifest::read(dir);
         }
         if dir.join("meta.json").exists() {
-            let seg = dir.join("seg-00000");
-            std::fs::create_dir_all(&seg).with_context(|| format!("creating {}", seg.display()))?;
+            let segment_name = next_segment_name(dir)?;
+            let seg = dir.join(&segment_name);
+            std::fs::create_dir(&seg).with_context(|| format!("Creating {}", seg.display()))?;
+            let mut originals = Vec::new();
             for entry in std::fs::read_dir(dir)? {
                 let entry = entry?;
                 let name = entry.file_name();
-                if name == "seg-00000" || name == "manifest.json" || name == "tombstones" {
+                if !entry.file_type()?.is_file()
+                    || name.to_string_lossy().starts_with(".sift-")
+                    || name == "manifest.json"
+                    || name == "tombstones"
+                {
                     continue;
                 }
                 let from = entry.path();
-                let to = seg.join(&name);
-                std::fs::rename(&from, &to)
-                    .with_context(|| format!("moving {} into segment", from.display()))?;
+                std::fs::hard_link(&from, seg.join(&name))
+                    .with_context(|| format!("Linking {} into the segment", from.display()))?;
+                originals.push(from);
             }
+            // Keep the original artifact readable until the complete segment is committed.
+            Index::open(&seg).context("Validating the migrated segment.")?;
+            fsync_dir_contents(&seg)?;
             let manifest = Manifest {
                 format: MANIFEST_FORMAT,
                 generation: 1,
                 segments: vec![SegmentRef {
-                    dir: "seg-00000".to_string(),
+                    dir: segment_name,
                     source: None,
                     build_args: Vec::new(),
                 }],
             };
             manifest.write(dir)?;
+            for original in originals {
+                std::fs::remove_file(&original)
+                    .with_context(|| format!("Removing migrated file {}", original.display()))?;
+            }
+            fsync_dir(dir)?;
             return Ok(manifest);
         }
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -139,27 +153,34 @@ impl Manifest {
     }
 }
 
-/// fsync a directory so a rename/creation inside it is durable. Best-effort on
-/// platforms where opening a directory for fsync isn't supported.
+/// Flush directory entries on Unix. Other platforms validate the directory and rely on file flushes.
 pub fn fsync_dir(dir: &Path) -> Result<()> {
-    if let Ok(f) = std::fs::File::open(dir) {
-        let _ = f.sync_all();
+    #[cfg(unix)]
+    {
+        let file = std::fs::File::open(dir)
+            .with_context(|| format!("Opening directory {} for synchronization", dir.display()))?;
+        file.sync_all()
+            .with_context(|| format!("Synchronizing directory {}", dir.display()))?;
+    }
+    #[cfg(not(unix))]
+    if !std::fs::metadata(dir)?.is_dir() {
+        return Err(anyhow!("{} is not a directory", dir.display()));
     }
     Ok(())
 }
 
-/// fsync every regular file directly in `dir`, then the directory itself. Used
-/// after building a segment so the segment is on stable storage before the
-/// manifest that references it is committed.
+/// Flush every regular file before a manifest can reference the segment.
 pub fn fsync_dir_contents(dir: &Path) -> Result<()> {
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            if p.is_file() {
-                if let Ok(f) = std::fs::File::open(&p) {
-                    let _ = f.sync_all();
-                }
-            }
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("Reading {} for synchronization", dir.display()))?
+    {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            let path = entry.path();
+            let file = std::fs::File::open(&path)
+                .with_context(|| format!("Opening {} for synchronization", path.display()))?;
+            file.sync_all()
+                .with_context(|| format!("Synchronizing {}", path.display()))?;
         }
     }
     fsync_dir(dir)
@@ -613,10 +634,33 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("sift_idxset_{name}_{}", std::process::id()));
+        let d = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("sift_idxset_{name}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn synchronization_reports_missing_paths() {
+        let path = scratch("sync");
+        assert!(fsync_dir(&path.join("missing")).is_err());
+        assert!(fsync_dir_contents(&path.join("missing")).is_err());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn invalid_legacy_migration_keeps_the_original_files() {
+        let path = scratch("invalid_migration");
+        std::fs::write(path.join("meta.json"), "invalid metadata").unwrap();
+        assert!(Manifest::ensure(&path).is_err());
+        assert_eq!(
+            std::fs::read_to_string(path.join("meta.json")).unwrap(),
+            "invalid metadata"
+        );
+        assert!(!path.join("manifest.json").exists());
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

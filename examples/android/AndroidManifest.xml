@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.sift.example">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+    <application android:label="Sift offline check" android:extractNativeLibs="true" />
+    <instrumentation android:name="org.sift.example.OfflineCheck"
+        android:targetPackage="org.sift.example" />
+</manifest>

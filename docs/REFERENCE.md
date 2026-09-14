@@ -37,10 +37,10 @@ dump of lexical and vector indices.
 
 ## Performance
 
-The [benchmark results](../benchmarks/RESULTS.md) compare exact and expanded
-retrieval from the same binary on SciFact. The
-[benchmark harness](../benchmarks/compare.py) rebuilds both variants and emits
-JSON for results collected on other machines or corpora.
+The independent IR Bench repository compares retrieval quality and integration
+cost across Sift and SQLite FTS5. See the [release checks](../RELEASE.md) for the
+invocation. Historical reports require remeasurement with the corrected nDCG
+calculation before they can serve as acceptance baselines.
 
 ## Controlling expansion
 
@@ -326,14 +326,18 @@ sift/
 ├── sift_build/         Python reference impl, same artifact shape
 ├── crates/
 │   ├── sift-core/      library: mmap an artifact, score it
-│   └── sift/           binary: build, serve, search
+│   ├── sift/           embedded Engine API and CLI/HTTP adapters
+│   └── sift-ffi/       C interface with explicit ownership
 └── artifacts/          built *.sift directories (gitignored)
 ```
 
-A legacy Python reference indexer ships in `sift_build/`; `tests/parity_test.sh`
+A legacy Python reference indexer ships in `sift_build/`. `tests/parity_test.sh`
 builds both implementations with an explicitly compatible configuration and
 verifies retrieval matches on a canonical query set. The Rust builder is the
 production implementation and source of truth for defaults.
+
+See the [embedding guide](EMBEDDING.md) for Rust, C, and Android examples.
+Reusable retrieval evaluation and training tools live in the separate IR Bench repository.
 
 ## Optional reranking
 
@@ -342,7 +346,7 @@ available. Both are disabled unless configured at server start:
 
 - **ONNX cross-encoder** (`serve --cross-encoder <dir>`, built with
   `--features cross-encoder`). Scores `(query, document)` pairs jointly. The
-  `reranker/` tooling exports an ONNX model and can distill one from a teacher.
+  The IR Bench repository contains the model training and distillation tools.
 - **GBDT reranker** (`serve --reranker model.json`). Native LightGBM-tree
   evaluation over per-hit features without an ONNX runtime.
 
@@ -364,13 +368,13 @@ document length.
 
 Build the training artifacts with `--compositional` when the model should use
 both qexp and composition evidence. Then train a model from labeled candidate
-results with the repository tool:
+results with the training tool in the IR Bench repository:
 
 ```bash
 uv run --no-project --with lightgbm --with requests --with numpy \
-  reranker/train_lgbm.py \
+  /path/to/ir-bench/reranker/train_lgbm.py \
   --sift http://127.0.0.1:8080 \
-  --data tests/data \
+  --data /path/to/ir-bench/work/data \
   --train scifact fiqa \
   --ood nfcorpus \
   --out reranker/reranker.lgb.json

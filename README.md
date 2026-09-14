@@ -1,6 +1,6 @@
 # sift
 
-**A local search engine with SQLite-shaped operations.**
+**An embeddable search engine with offline queries.**
 
 sift is a CPU-first search engine that expands documents with weighted semantic
 neighbors when the index is built, then serves queries from one mmap-backed
@@ -34,7 +34,7 @@ Sift is a good choice when lexical behavior, simple operations, and predictable
 CPU cost matter more. Sift does not replace a full contextual reranker or a
 vector database for every workload.
 
-## See the difference in one minute
+## Try a small corpus
 
 The repository includes a tiny animal corpus:
 
@@ -42,14 +42,14 @@ The repository includes a tiny animal corpus:
 cargo build --release
 ./target/release/sift build \
   --input examples/animals.jsonl \
-  --out /tmp/animals.sift \
+  --out artifacts/animals.sift \
   --threshold 0.5 --k-expand 20 --stop-df 1.0
 ```
 
 Exact BM25 only finds the literal term:
 
 ```console
-$ sift search /tmp/animals.sift cat --semantic-weight 0
+$ sift search artifacts/animals.sift cat --semantic-weight 0
 # 1 hits
 cat     A domestic cat sleeps on the windowsill.
 ```
@@ -57,7 +57,7 @@ cat     A domestic cat sleeps on the windowsill.
 The same artifact with semantic expansion also finds the vocabulary mismatch:
 
 ```console
-$ sift search /tmp/animals.sift cat --semantic-weight 0.5
+$ sift search artifacts/animals.sift cat --semantic-weight 0.5
 # 2 hits
 cat     A domestic cat sleeps on the windowsill.
 kitten  A playful kitten chases a piece of string.
@@ -79,13 +79,12 @@ sift search artifacts/docs.sift "cat eats mouse" \
 The HTTP equivalent is `"composition_weight": 0.7`. The sidecar combines
 mean, alternating-position, and position-weighted pools of the active static
 term vectors. This preserves the fast sparse candidate search and adds a
-bounded order-aware rerank. The default value is `0`. Local BEIR evaluation
-showed that positive composition weights reduced ranking quality, even though
-candidate recall stayed unchanged. Composition reranking requires a single
+bounded order-aware rerank. The default value is `0`. Validate this optional mode
+against relevance judgments for your corpus. Composition reranking requires a single
 segment. Run `sift compact` after incremental updates.
 
 For full query-document context, build the optional cross-encoder feature and
-start the server with the included MiniLM model:
+start the server with a compatible MiniLM model:
 
 ```bash
 cargo build --release --features cross-encoder
@@ -101,12 +100,10 @@ single-segment index.
 
 For a CPU-only learned reranker, build the artifacts with `--compositional` so
 the model can use qexp and composition evidence as candidate features. Then
-train a LightGBM LambdaMART model and load it when serving:
+use the training scripts in IR Bench to train a LightGBM LambdaMART model.
+Load the exported model when serving:
 
 ```bash
-uv run --no-project --with lightgbm --with requests --with numpy \
-  reranker/train_lgbm.py --sift http://127.0.0.1:8080 \
-  --train scifact fiqa --ood nfcorpus --out reranker/reranker.lgb.json
 sift serve --artifacts ./artifacts --reranker reranker/reranker.lgb.json
 ```
 
@@ -145,62 +142,23 @@ limited order sensitivity for selected corpora. Neither mode understands
 natural-language negation or full document context as well as a contextual
 model.
 
-## Measured performance
+## Retrieval evaluation
 
-### Same-machine BM25 comparison
+Use the independent IR Bench repository to compare Sift with SQLite FTS5 on
+corpora, queries, and relevance judgments. The runner records index size,
+build duration, integration latency, nDCG@10, MRR@10, and recall.
 
-Measured on an Apple M1 Ultra with 5,183 SciFact documents. Both variants were
-built by the same release binary with the same tokenizer. Build order alternated
-over five runs. Query results cover 600 uncached searches per engine through the
-same server. Engine latency excludes HTTP and JSON overhead.
+Historical retrieval-quality tables used an incorrect ideal nDCG calculation.
+Those tables and their experiment records now live in IR Bench. Remeasure a
+configuration with the corrected evaluator before using it as a baseline.
 
-| engine | mean build | artifact | mean query | p50 | p95 |
-|---|---:|---:|---:|---:|---:|
-| exact BM25 | 2.96 s | 24.0 MB | 11.1 µs | 10 µs | 22 µs |
-| sift semantic | 2.81 s | 29.6 MB | 14.1 µs | 12 µs | 32 µs |
-
-At this corpus size, build times are effectively in the same range. Semantic
-postings add about 24% to the artifact and roughly 3 µs to mean engine latency.
-Run the benchmark on your hardware:
-
-```bash
-python3 benchmarks/compare.py artifacts/scifact.sift --runs 5 --query-repeat 30
-```
-
-The benchmark exports the original JSONL from a payload-bearing artifact,
-rebuilds exact and semantic variants, alternates build order to reduce cache
-bias, disables the result cache, and reports machine-readable JSON.
-
-### Retrieval behavior
-
-Expansion helps when relevant documents use related terms that are absent from
-the query. It can also introduce weak associations. Use `--semantic-weight` to
-control that tradeoff and evaluate it against relevance judgments from your own
-corpus.
-
-### Same-suite retrieval quality
-
-The local BEIR suite contains SciFact, NFCorpus, and FiQA, with 1,271 queries
-in total. These numbers use the same Sift release binary and candidate depth.
-The BM25 row disables semantic expansion and order bonuses. The HNSW hybrid
-configuration was not benchmarked in this repository, so no unsupported HNSW
-number is shown.
-
-| method | nDCG@10 | MRR@10 | Recall@100 |
-|---|---:|---:|---:|
-| Exact BM25 | 0.4648 | 0.4857 | 0.5723 |
-| Sift 2 sparse | 0.4879 | 0.5096 | 0.5812 |
-| Sift 2 integrated tree | 0.4952 | 0.5177 | 0.5812 |
-| Sift 2 contextual | 0.5096 | 0.5334 | 0.5812 |
-
-Against exact BM25, the measured Sift 2 sparse path adds `+0.0231` nDCG@10,
-`+0.0239` MRR@10, and `+0.0089` Recall@100. The integrated tree uses qexp and
-composition as learned features. The contextual row requires a model and is
-corpus-dependent.
+Expansion can improve recall when relevant documents use related terms. It can
+also introduce weak associations. Evaluate the semantic weight against your
+own relevance judgments. See [the release checks](RELEASE.md) for the command.
 
 ## Install and build
 
-Requirements: Rust 1.75 or newer.
+Use a current stable Rust toolchain for the locked dependencies.
 
 ```bash
 git clone https://github.com/AghoFru/sift
@@ -251,10 +209,13 @@ Sift is designed to have the operational shape of SQLite for search:
 - Incremental writes, deletes, compaction, filtering, facets, and pagination
 - A CLI for local use and HTTP for applications that need a process boundary
 
-Sift is not an SQLite extension today. It does not provide SQL or transactions
-through the search API. The natural next integration is a small C ABI and an
-SQLite virtual table that maps rows to a Sift artifact while leaving normal
-SQLite queries and transactions in control of application data.
+Sift provides an embedded Rust API and a C interface for indexing, updates,
+deletes, and search. An Android example verifies offline search from an application
+process. See the [embedding guide](docs/EMBEDDING.md) for code, ownership rules,
+build commands, and storage limits.
+
+Sift does not provide SQL or transactions through the search API. An SQLite
+extension and distributed infrastructure are outside the current scope.
 
 ## Operational surface
 

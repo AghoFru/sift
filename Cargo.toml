@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sift-core", "crates/sift"]
+members = ["crates/sift-core", "crates/sift", "crates/sift-ffi"]
 
 [workspace.package]
 version = "0.1.0"

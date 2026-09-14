@@ -1,6 +1,6 @@
 // CLI configuration, artifact metadata, and reusable model loading.
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct BuildArgs {
     /// Input corpus (JSONL).
     #[arg(long)]
@@ -174,6 +174,13 @@ pub struct BuildArgs {
     /// Minimum co-occurrence count for a PPMI edge (drops noise pairs).
     #[arg(long, default_value_t = 3)]
     pub corpus_min_cooc: u32,
+}
+
+impl BuildArgs {
+    /// Create build options with the same defaults as the CLI.
+    pub fn new(input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<Self> {
+        build_args_from(input.as_ref(), output.as_ref(), &[])
+    }
 }
 
 #[derive(Serialize)]
