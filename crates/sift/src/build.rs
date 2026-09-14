@@ -1,6 +1,6 @@
 //! `sift build` - produce a `.sift` artifact from a JSONL corpus.
 //!
-//! Same recipe as the Python reference (`sift_build/build.py`):
+//! Index construction recipe:
 //!   1. Tokenize each doc with the model's WordPiece tokenizer.
 //!   2. Compute doc-frequency, cut stopwords (df/N > stop_df).
 //!   3. Load and normalize m2v embeddings for the active subwords.

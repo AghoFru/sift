@@ -15,7 +15,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
-      - uses: astral-sh/setup-uv@v6
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo fmt --all -- --check
@@ -25,8 +24,7 @@ jobs:
       - run: cargo test -p sift --no-default-features --features edge --locked
       - run: cargo check --workspace --all-features --locked
       - run: cargo build --workspace --release --locked
-      - run: python3 -m compileall -q sift_build tests
-      - run: bash -n tests/*.sh
+      - run: bash -n examples/android/build.sh
       - run: cargo package -p sift-core --locked --allow-dirty
       - run: cargo package -p sift --locked --allow-dirty --no-verify
       - run: cargo package -p sift-ffi --locked --allow-dirty --no-verify

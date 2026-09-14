@@ -113,8 +113,8 @@ The build script supports macOS and Linux hosts. It uses the installed SDK tools
 directly and removes its disposable signing key and staging directory.
 
 ```bash
-python3 examples/android/build.py target/c-api-index \
-  --sdk /path/to/android-sdk --ndk /path/to/android-sdk/ndk/28.2.13676358
+bash examples/android/build.sh target/c-api-index \
+  /path/to/android-sdk /path/to/android-sdk/ndk/28.2.13676358
 adb -s DEVICE_SERIAL install target/android/sift-offline.apk
 adb -s DEVICE_SERIAL shell am instrument -w org.sift.example/.OfflineCheck
 adb -s DEVICE_SERIAL uninstall org.sift.example
