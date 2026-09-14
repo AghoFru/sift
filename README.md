@@ -1,7 +1,9 @@
 # Sift
 
-Add search to your application with exact and semantic matching.
-Embed Sift through Rust or C, or run it as an HTTP service. Searches work offline.
+**Fast, CPU-only semantic search.**
+
+Sift finds related terms as well as exact matches, with no model inference or
+network connection at query time.
 
 ## Get started
 
