@@ -19,7 +19,7 @@ and `text` input. Writes and compaction need the recorded build model.
 
 | Build option | Purpose |
 |---|---|
-| `--threshold`, `--k-expand` | Select semantic neighbors. More expansion can add irrelevant matches. |
+| `--threshold`, `--k-expand` | Select semantic neighbors. |
 | `--positions` | Enable phrase filtering and proximity scoring. |
 | `--rank-fields price,rating` | Store numeric fields for ranking and facets. |
 | `--compositional` | Enable the optional composition reranker. |
@@ -91,7 +91,7 @@ sift replicate --from /source/docs.sift --to /replica/docs.sift
 Use `--watch 5` to repeat. HTTP replication requires `serve --enable-replication`
 and a source URL such as `https://host/replicate/docs`. These endpoints expose
 index contents, including documents. Protect them with authentication.
-Replication copies committed index state. It does not distribute queries.
+Replication copies committed index state.
 
 ## Optional reranking
 
@@ -103,4 +103,3 @@ Replication copies committed index state. It does not distribute queries.
 
 Rerankers only reorder retrieved candidates. Cross-encoders add query-time model
 inference. Positive `contextual_weight` requires a basic single-segment query.
-Compare relevance and latency before enabling a reranker.
