@@ -1,12 +1,11 @@
 # Sift
 
-Embeddable search with semantic matching and offline queries.
-Sift adds related terms when building the index, then searches it on the CPU.
-Standard searches need no model or network connection.
+Add search to your application with exact and semantic matching.
+Embed Sift through Rust or C, or run it as an HTTP service. Searches work offline.
 
-## Try it
+## Get started
 
-From this checkout, with a stable Rust toolchain:
+Requires a stable Rust toolchain. From this checkout:
 
 ```sh
 cargo build --release --locked
@@ -15,20 +14,17 @@ cargo build --release --locked
 ./target/release/sift search artifacts/animals.sift cat
 ```
 
-The first build downloads a model. Use `--model /path/to/model` for a local copy.
-Use `--semantic-weight 0` for exact matching. The default is `0.5`.
-
-Your own corpus uses one JSON document per line:
+The first index build downloads a model.
+To search your own documents, replace the input with a JSONL file:
 
 ```json
 {"id":"1","text":"A document to search","title":"Optional title"}
 ```
 
-## Use it
+## Add it to your application
 
-- **Embed:** [Rust and C APIs, Android example](docs/EMBEDDING.md).
-- **Serve:** `./target/release/sift serve --artifacts ./artifacts`.
-- **Configure:** [HTTP requests, updates, and search options](docs/REFERENCE.md).
-- **Evaluate:** [IR Bench](https://github.com/AghoFru/ir-bench).
+- [Embed with Rust or C, including an Android example](docs/EMBEDDING.md).
+- [Run an HTTP service, update documents, and configure search](docs/REFERENCE.md).
+- [Compare retrieval quality with IR Bench](https://github.com/AghoFru/ir-bench).
 
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Apache-2.0](LICENSE)

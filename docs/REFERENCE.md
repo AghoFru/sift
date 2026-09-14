@@ -25,8 +25,7 @@ and `text` input. Writes and compaction need the recorded build model.
 | `--compositional` | Enable the optional composition reranker. |
 | `--no-payload` | Omit stored payloads from search results. |
 
-Adds create immutable segments. Compaction merges them and removes deleted
-content. Deleted documents affect term statistics until compaction.
+Run `sift compact` after a batch of updates to reclaim deleted document storage.
 
 ## HTTP search
 
@@ -61,9 +60,8 @@ The response includes `hits`, `total`, and `latency_us`. Each hit contains
 `--positions`. Use `-term` for explicit exclusions. The full request schema is
 [SearchOptions](../crates/sift/src/query/request.rs).
 
-Some options require one segment, including facets, ranking tiers, MMR, PRF,
-deduplication, composition, and contextual reranking. Run `sift compact` when
-an option reports this restriction.
+After incremental updates, some search options require compaction.
+Run `sift compact` if a request reports that it requires a single segment.
 
 ## HTTP writes
 
@@ -79,9 +77,6 @@ curl -s http://127.0.0.1:8080/compact -H 'content-type: application/json' \
 `--read-only` disables write and admin routes. `--api-keys FILE` enables bearer
 authentication. See `sift serve --help` for server settings.
 
-Other routes: `POST /explain`, `/suggest`, `/reload`, `/snapshot`, `/alias`, and
-`GET /datasets`, `/stats`, `/metrics`, `/healthz`, `/readyz`, `/version`.
-
 ## Replication
 
 ```sh
@@ -91,7 +86,6 @@ sift replicate --from /source/docs.sift --to /replica/docs.sift
 Use `--watch 5` to repeat. HTTP replication requires `serve --enable-replication`
 and a source URL such as `https://host/replicate/docs`. These endpoints expose
 index contents, including documents. Protect them with authentication.
-Replication copies committed index state.
 
 ## Optional reranking
 
