@@ -33,15 +33,16 @@ To search your own documents, replace the input with a JSONL file:
 SciFact: 5,183 documents, 300 queries, Apple M1 Ultra, CPU only.
 Higher nDCG@10 means better relevance. Lower latency is better.
 
-| System | nDCG@10 | Median query latency |
-|---|---:|---:|
-| Sift | 0.696 | 0.75 ms |
-| BM25 (Terrier) | 0.684 | 4.20 ms |
-| BGE-small | 0.713 | 15.17 ms |
-| SPLADE | 0.708 | 37.41 ms |
-| Weaviate hybrid (E5 + BM25) | 0.723 | 20.82 ms |
+| System | nDCG@10 | Median query latency | Ingestion |
+|---|---:|---:|---:|
+| Sift | 0.696 | 0.75 ms | 2.72 s |
+| BM25 (Terrier) | 0.684 | 4.20 ms | 1.49 s |
+| BGE-small | 0.713 | 15.17 ms | 175.42 s |
+| SPLADE | 0.708 | 37.41 ms | 379.67 s |
+| Weaviate hybrid (E5 + BM25) | 0.723 | 20.82 ms | 176.18 s |
 
 Top-100 query latency includes encoding and adapter overhead, including HTTP where used.
+Ingestion measures a full index build, including document encoding, with files already local.
 These results cover one query at a time on small English datasets.
 See [full comparisons, test settings, and reproduction steps](https://github.com/AghoFru/ir-bench/tree/main/results/sift-cpu).
 
