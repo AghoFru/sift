@@ -33,15 +33,15 @@ To search your own documents, replace the input with a JSONL file:
 BEIR subset: SciFact, NFCorpus, and ArguAna. Apple M1 Ultra, CPU only.
 Higher nDCG@10 means better relevance. Lower times are better.
 
-| System | Median nDCG@10 | Median query latency | Median ingestion |
+| System | Mean nDCG@10 | Median query latency | Median ingestion |
 |---|---:|---:|---:|
-| Sift | 0.449 | 0.83 ms | 2.72 s |
-| BM25 (Terrier) | 0.491 | 4.05 ms | 1.48 s |
-| BGE-small | 0.603 | 14.09 ms | 175.42 s |
-| SPLADE | 0.508 | 36.48 ms | 379.67 s |
-| Weaviate hybrid (E5 + BM25) | 0.478 | 20.77 ms | 181.27 s |
+| Sift | 0.493 | 0.83 ms | 2.72 s |
+| BM25 (Terrier) | 0.501 | 4.05 ms | 1.48 s |
+| BGE-small | 0.553 | 14.09 ms | 175.42 s |
+| SPLADE | 0.523 | 36.48 ms | 379.67 s |
+| Weaviate hybrid (E5 + BM25) | 0.514 | 20.77 ms | 181.27 s |
 
-Each dataset has equal weight. nDCG@10 is the median of dataset means.
+Each dataset has equal weight. nDCG@10 is the mean of dataset scores.
 Query latency is the median of dataset medians, including encoding and adapter overhead.
 Ingestion is the median full index build time, with files already local.
 See [datasets, test settings, and full results](https://github.com/AghoFru/ir-bench/tree/main/results/beir-cpu).
