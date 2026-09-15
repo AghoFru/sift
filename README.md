@@ -30,20 +30,20 @@ To search your own documents, replace the input with a JSONL file:
 
 ## Performance
 
-SciFact: 5,183 documents, 300 queries, Apple M1 Ultra, CPU only.
-Higher nDCG@10 means better relevance. Lower latency is better.
+BEIR subset: SciFact, NFCorpus, and ArguAna. Apple M1 Ultra, CPU only.
+Higher nDCG@10 means better relevance. Lower times are better.
 
-| System | nDCG@10 | Median query latency | Ingestion |
+| System | Median nDCG@10 | Median query latency | Median ingestion |
 |---|---:|---:|---:|
-| Sift | 0.696 | 0.75 ms | 2.72 s |
-| BM25 (Terrier) | 0.684 | 4.20 ms | 1.49 s |
-| BGE-small | 0.713 | 15.17 ms | 175.42 s |
-| SPLADE | 0.708 | 37.41 ms | 379.67 s |
-| Weaviate hybrid (E5 + BM25) | 0.723 | 20.82 ms | 176.18 s |
+| Sift | 0.449 | 0.83 ms | 2.72 s |
+| BM25 (Terrier) | 0.491 | 4.05 ms | 1.48 s |
+| BGE-small | 0.603 | 14.09 ms | 175.42 s |
+| SPLADE | 0.508 | 36.48 ms | 379.67 s |
+| Weaviate hybrid (E5 + BM25) | 0.478 | 20.77 ms | 181.27 s |
 
-Top-100 query latency includes encoding and adapter overhead, including HTTP where used.
-Ingestion measures a full index build, including document encoding, with files already local.
-These results cover one query at a time on small English datasets.
-See [full comparisons, test settings, and reproduction steps](https://github.com/AghoFru/ir-bench/tree/main/results/sift-cpu).
+Each dataset has equal weight. nDCG@10 is the median of dataset means.
+Query latency is the median of dataset medians, including encoding and adapter overhead.
+Ingestion is the median full index build time, with files already local.
+See [datasets, test settings, and full results](https://github.com/AghoFru/ir-bench/tree/main/results/beir-cpu).
 
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Apache-2.0](LICENSE)
