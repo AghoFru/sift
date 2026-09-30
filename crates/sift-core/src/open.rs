@@ -29,6 +29,7 @@ impl Index {
             let map = unsafe { Mmap::map(&f).with_context(|| format!("mmap {}", p.display()))? };
             // Hint the kernel that we'll need all of this; allows asynchronous
             // prefetch so cold queries pay less of the page-fault tax.
+            #[cfg(unix)]
             let _ = map.advise(memmap2::Advice::WillNeed);
             Ok(map)
         };

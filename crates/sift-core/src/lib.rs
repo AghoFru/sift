@@ -407,6 +407,7 @@ impl Index {
     /// under memory pressure. u24-packed indices live in an owned buffer
     /// (anonymous memory) and are skipped. Best-effort: ignores
     /// RLIMIT_MEMLOCK failures and just logs.
+    #[cfg(unix)]
     pub fn mlock_postings(&self) {
         let mm = &self._mm_data;
         let rc = unsafe { libc::mlock(mm.as_ptr() as *const libc::c_void, mm.len()) };
@@ -427,6 +428,12 @@ impl Index {
                 );
             }
         }
+    }
+
+    /// Windows uses page access through `prewarm_postings` instead of Unix memory locking.
+    #[cfg(not(unix))]
+    pub fn mlock_postings(&self) {
+        self.prewarm_postings();
     }
 
     /// Touch every page of the big posting-list files (`indices.bin`,
