@@ -177,7 +177,13 @@ pub fn fsync_dir_contents(dir: &Path) -> Result<()> {
         let entry = entry?;
         if entry.file_type()?.is_file() {
             let path = entry.path();
-            let file = std::fs::File::open(&path)
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            // Windows requires write access to flush file buffers.
+            #[cfg(windows)]
+            options.write(true);
+            let file = options
+                .open(&path)
                 .with_context(|| format!("Opening {} for synchronization", path.display()))?;
             file.sync_all()
                 .with_context(|| format!("Synchronizing {}", path.display()))?;
@@ -647,6 +653,10 @@ mod tests {
         let path = scratch("sync");
         assert!(fsync_dir(&path.join("missing")).is_err());
         assert!(fsync_dir_contents(&path.join("missing")).is_err());
+        let file = path.join("segment.bin");
+        std::fs::write(&file, b"complete segment").unwrap();
+        fsync_dir_contents(&path).unwrap();
+        assert_eq!(std::fs::read(file).unwrap(), b"complete segment");
         std::fs::remove_dir_all(path).unwrap();
     }
 
