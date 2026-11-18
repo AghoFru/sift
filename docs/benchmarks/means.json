@@ -1,0 +1,157 @@
+{
+ "used_in_tuning": {
+  "bm25": {
+   "datasets": [
+    "scifact",
+    "nfcorpus",
+    "fiqa"
+   ],
+   "nDCG@10": 0.4215669879067854,
+   "R@100": 0.5778317620261144,
+   "median_of_p50_us": 3935.8540000000003
+  },
+  "bm25s": {
+   "datasets": [
+    "scifact",
+    "nfcorpus",
+    "fiqa"
+   ],
+   "nDCG@10": 0.4195703564650498,
+   "R@100": 0.5728814643512272,
+   "median_of_p50_us": 346.4375
+  },
+  "sift": {
+   "datasets": [
+    "scifact",
+    "nfcorpus",
+    "fiqa"
+   ],
+   "nDCG@10": 0.43029354950188353,
+   "R@100": 0.5809075759586632,
+   "median_of_p50_us": 638.2085
+  },
+  "sift-ffi": {
+   "datasets": [
+    "scifact",
+    "nfcorpus",
+    "fiqa"
+   ],
+   "nDCG@10": 0.43029354950188353,
+   "R@100": 0.5809075759586632,
+   "median_of_p50_us": 308.271
+  },
+  "sift-rust": {
+   "datasets": [
+    "scifact",
+    "nfcorpus",
+    "fiqa"
+   ],
+   "median_of_p50_us": 155.04149999999998
+  }
+ },
+ "not_used_in_tuning": {
+  "bm25": {
+   "datasets": [
+    "arguana",
+    "scidocs",
+    "cqadupstack-android",
+    "cqadupstack-webmasters"
+   ],
+   "nDCG@10": 0.3280314088432491,
+   "R@100": 0.6545235289520805,
+   "median_of_p50_us": 4326.85475
+  },
+  "bm25s": {
+   "datasets": [
+    "arguana",
+    "scidocs",
+    "cqadupstack-android",
+    "cqadupstack-webmasters"
+   ],
+   "nDCG@10": 0.3401792370976462,
+   "R@100": 0.659596384191171,
+   "median_of_p50_us": 572.3335
+  },
+  "sift": {
+   "datasets": [
+    "arguana",
+    "scidocs",
+    "cqadupstack-android",
+    "cqadupstack-webmasters"
+   ],
+   "nDCG@10": 0.33698935410073183,
+   "R@100": 0.6564569193566574,
+   "median_of_p50_us": 829.1142500000001
+  },
+  "sift-ffi": {
+   "datasets": [
+    "arguana",
+    "scidocs",
+    "cqadupstack-android",
+    "cqadupstack-webmasters"
+   ],
+   "nDCG@10": 0.33698935410073183,
+   "R@100": 0.6564569193566574,
+   "median_of_p50_us": 355.6875
+  },
+  "sift-rust": {
+   "datasets": [
+    "arguana",
+    "scidocs",
+    "cqadupstack-android",
+    "cqadupstack-webmasters"
+   ],
+   "median_of_p50_us": 200.88549999999998
+  }
+ },
+ "new_held_out": {
+  "bm25": {
+   "datasets": [
+    "scidocs",
+    "cqadupstack-android",
+    "cqadupstack-webmasters"
+   ],
+   "nDCG@10": 0.27358846138343645,
+   "R@100": 0.5493220310162401,
+   "median_of_p50_us": 4245.709
+  },
+  "bm25s": {
+   "datasets": [
+    "scidocs",
+    "cqadupstack-android",
+    "cqadupstack-webmasters"
+   ],
+   "nDCG@10": 0.28927445583721223,
+   "R@100": 0.5575083131083798,
+   "median_of_p50_us": 519.167
+  },
+  "sift": {
+   "datasets": [
+    "scidocs",
+    "cqadupstack-android",
+    "cqadupstack-webmasters"
+   ],
+   "nDCG@10": 0.29966037133102236,
+   "R@100": 0.560434735529123,
+   "median_of_p50_us": 824.9165
+  },
+  "sift-ffi": {
+   "datasets": [
+    "scidocs",
+    "cqadupstack-android",
+    "cqadupstack-webmasters"
+   ],
+   "nDCG@10": 0.29966037133102236,
+   "R@100": 0.560434735529123,
+   "median_of_p50_us": 330.45799999999997
+  },
+  "sift-rust": {
+   "datasets": [
+    "scidocs",
+    "cqadupstack-android",
+    "cqadupstack-webmasters"
+   ],
+   "median_of_p50_us": 187.8545
+  }
+ }
+}

@@ -1,0 +1,82 @@
+{
+ "datasets": [
+  {
+   "name": "nfcorpus",
+   "source": "irds:beir/nfcorpus/test"
+  },
+  {
+   "name": "scifact",
+   "source": "irds:beir/scifact/test"
+  },
+  {
+   "name": "arguana",
+   "source": "irds:beir/arguana",
+   "expected_missing_qrel_docs": [
+    "test-education-ufsdfkhbwu-con03b",
+    "test-free-speech-debate-yfsdfkhbwu-con03b",
+    "test-politics-dhwem-pro06b",
+    "test-science-sghwbdgmo-con03b",
+    "test-society-asfhwapg-con04b"
+   ]
+  },
+  {
+   "name": "fiqa",
+   "source": "irds:beir/fiqa/test"
+  },
+  {
+   "name": "scidocs",
+   "source": "irds:beir/scidocs"
+  },
+  {
+   "name": "cqadupstack-android",
+   "source": "irds:beir/cqadupstack/android"
+  },
+  {
+   "name": "cqadupstack-webmasters",
+   "source": "irds:beir/cqadupstack/webmasters"
+  }
+ ],
+ "engines": [
+  {
+   "name": "bm25",
+   "adapter": "terrier",
+   "config": {
+    "wmodel": "BM25"
+   }
+  },
+  {
+   "name": "sift",
+   "adapter": "sift",
+   "config": {
+    "binary": "SIFT_CHECKOUT/target/release/sift",
+    "model": "work/model"
+   }
+  },
+  {
+   "name": "sift-ffi",
+   "adapter": "inprocess_adapters:SiftFFI",
+   "config": {
+    "library": "SIFT_CHECKOUT/target/release/libsift_ffi.dylib",
+    "binary": "SIFT_CHECKOUT/target/release/sift",
+    "model": "work/model"
+   }
+  },
+  {
+   "name": "bm25s",
+   "adapter": "inprocess_adapters:BM25S",
+   "config": {}
+  }
+ ],
+ "depth": 100,
+ "measures": [
+  "nDCG@10",
+  "RR@10",
+  "AP@100",
+  "R@100",
+  "Judged@10"
+ ],
+ "warmup": 1,
+ "repeats": 2,
+ "seed": 0,
+ "exclude_self_matches": true
+}
