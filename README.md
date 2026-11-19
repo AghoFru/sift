@@ -32,62 +32,46 @@ To search your own documents, replace the input with a JSONL file:
 ## Relevance and speed
 
 Relevance is close to BM25. Sift is not a dense or neural retriever.
-On the four datasets that did not inform Sift's defaults, mean nDCG@10 is
-0.337 for Sift, 0.328 for BM25 (Terrier), and 0.340 for BM25 (bm25s).
-
-Sift's defaults were chosen on SciFact, NFCorpus, and FiQA, so those results are optimistic.
-SciDocs and the two CQADupStack subsets were measured for the first time in this run.
-ArguAna appeared in earlier reports but was not in the tuning grid.
+Sift's defaults were chosen on SciFact, NFCorpus, and FiQA. The other four datasets did not inform them.
 
 nDCG@10 / Recall@100 on BEIR test judgments, 100 results per query. Higher is better.
 
-| Dataset | Documents | Sift | BM25 (Terrier) | BM25 (bm25s) |
-|---|---:|---:|---:|---:|
-| SciFact (tuning) | 5,183 | 0.696 / 0.926 | 0.684 / 0.926 | 0.686 / 0.913 |
-| NFCorpus (tuning) | 3,633 | 0.332 / 0.253 | 0.328 / 0.248 | 0.321 / 0.247 |
-| FiQA (tuning) | 57,638 | 0.262 / 0.563 | 0.253 / 0.559 | 0.251 / 0.559 |
-| **Mean, tuning** | | **0.430 / 0.581** | **0.422 / 0.578** | **0.420 / 0.573** |
-| ArguAna | 8,674 | 0.449 / 0.945 | 0.491 / 0.970 | 0.493 / 0.966 |
-| SciDocs | 25,657 | 0.160 / 0.364 | 0.158 / 0.362 | 0.158 / 0.365 |
-| CQADupStack Android | 22,998 | 0.406 / 0.703 | 0.373 / 0.704 | 0.397 / 0.707 |
-| CQADupStack Webmasters | 17,405 | 0.333 / 0.614 | 0.290 / 0.582 | 0.313 / 0.601 |
-| **Mean, not tuned** | | **0.337 / 0.656** | **0.328 / 0.655** | **0.340 / 0.660** |
-
-Against BM25 (Terrier), Sift is 0.042 nDCG@10 lower on ArguAna and 0.033 to 0.043 higher on CQADupStack.
-
-Query latency in milliseconds, median / p95 over all judged queries.
-One query at a time on one thread, after one warmup pass, over two measured passes.
-Lower is better.
-
-| Dataset | Sift, Rust | Sift, Python C API | bm25s, Python | Terrier, PyTerrier | Sift, HTTP |
+| Dataset | Documents | Sift | Tantivy | BM25 (Terrier) | BM25 (bm25s) |
 |---|---:|---:|---:|---:|---:|
-| SciFact | 0.16 / 0.27 | 0.31 / 0.46 | 0.35 / 0.52 | 3.94 / 4.62 | 0.64 / 0.85 |
-| NFCorpus | 0.04 / 0.09 | 0.19 / 0.30 | 0.27 / 0.43 | 3.35 / 4.35 | 0.47 / 0.66 |
-| FiQA | 0.41 / 0.73 | 0.56 / 0.91 | 0.80 / 1.09 | 4.50 / 6.14 | 1.03 / 1.41 |
-| ArguAna | 1.17 / 2.31 | 1.36 / 2.72 | 1.81 / 9.92 | 7.43 / 10.75 | 1.93 / 3.20 |
-| SciDocs | 0.21 / 0.37 | 0.38 / 0.56 | 0.63 / 0.83 | 4.41 / 5.56 | 0.82 / 1.07 |
-| CQADupStack Android | 0.19 / 0.33 | 0.33 / 0.54 | 0.52 / 0.73 | 4.25 / 5.40 | 0.83 / 1.09 |
-| CQADupStack Webmasters | 0.19 / 0.33 | 0.33 / 0.49 | 0.44 / 0.63 | 4.08 / 4.95 | 0.82 / 1.07 |
+| SciFact (tuning) | 5,183 | 0.696 / 0.926 | 0.685 / 0.921 | 0.684 / 0.926 | 0.686 / 0.913 |
+| NFCorpus (tuning) | 3,633 | 0.332 / 0.253 | 0.323 / 0.247 | 0.328 / 0.248 | 0.321 / 0.247 |
+| FiQA (tuning) | 57,638 | 0.262 / 0.563 | 0.251 / 0.552 | 0.253 / 0.559 | 0.251 / 0.559 |
+| **Mean, tuning** | | **0.430 / 0.581** | **0.419 / 0.574** | **0.422 / 0.578** | **0.420 / 0.573** |
+| ArguAna | 8,674 | 0.449 / 0.945 | 0.462 / 0.951 | 0.491 / 0.970 | 0.493 / 0.966 |
+| SciDocs | 25,657 | 0.160 / 0.364 | 0.154 / 0.358 | 0.158 / 0.362 | 0.158 / 0.365 |
+| CQADupStack Android | 22,998 | 0.406 / 0.703 | 0.402 / 0.713 | 0.373 / 0.704 | 0.397 / 0.707 |
+| CQADupStack Webmasters | 17,405 | 0.333 / 0.614 | 0.319 / 0.598 | 0.290 / 0.582 | 0.313 / 0.601 |
+| **Mean, not tuned** | | **0.337 / 0.656** | **0.334 / 0.655** | **0.328 / 0.655** | **0.340 / 0.660** |
 
-- **Sift, Rust**: in-process engine time. Wall time of one `Engine::search` call.
-- **Sift, Python C API** and **bm25s, Python**: in-process library time from the same Python loop.
-  Sift's time includes JSON request and response handling. The bm25s time includes query tokenization and stemming.
-- **Terrier, PyTerrier**: in-process PyTerrier call, including the Python to Java boundary.
-- **Sift, HTTP**: end-to-end local HTTP request to `sift serve`, including JSON encoding.
+Tantivy is Tantivy 0.27 BM25 with its English stemming tokenizer.
 
-From the same Python loop, Sift's median was 1.1 to 1.6 times lower than bm25s on every dataset.
-This compares two library calls, not two engines in the same language.
-There is no native Rust BM25 baseline here.
+Query latency in microseconds, median / p95. One query at a time on one CPU core. Lower is better.
 
-Hardware: Apple M1 Ultra, 20 CPU cores, CPU only. Other processes ran on the machine during the test.
-Sift built every index with default settings. bm25s used k1=1.5, b=0.75, English stopwords, and Snowball stemming.
-Terrier used BM25 with its default English pipeline.
+| Dataset | Sift, Rust | Tantivy, Rust | Sift, Python C API | bm25s, Python |
+|---|---:|---:|---:|---:|
+| SciFact | 120 / 208 | 155 / 499 | 202 / 291 | 185 / 216 |
+| FiQA | 311 / 554 | 958 / 2,847 | 387 / 620 | 501 / 666 |
+| ArguAna | 944 / 1,754 | 14,600 / 49,783 | 1,034 / 1,831 | 619 / 946 |
+| SciDocs | 169 / 289 | 306 / 713 | 253 / 373 | 383 / 468 |
+| CQADupStack Android | 147 / 256 | 405 / 1,211 | 223 / 332 | 283 / 366 |
+| CQADupStack Webmasters | 147 / 250 | 312 / 1,022 | 222 / 320 | 254 / 318 |
 
-An [earlier IR Bench run](https://github.com/AghoFru/ir-bench/tree/main/results/beir-cpu) on SciFact, NFCorpus,
-and ArguAna also measured neural retrievers, with encoders limited to 4 of 20 CPU threads.
-Its mean nDCG@10 was 0.553 for BGE-small, 0.523 for SPLADE, 0.514 for Weaviate hybrid search,
-and 0.501 for BM25 (Terrier).
-Those systems are more relevant than Sift on those datasets. They run a model at query time.
+- **Sift, Rust**: one `Engine::search` call.
+- **Tantivy, Rust**: query analysis, one Tantivy search for the top 100, and the lookup of 100 document IDs.
+- **Sift, Python C API**: one call to the Sift C API from Python, including JSON request and response handling.
+- **bm25s, Python**: one bm25s call, including query tokenization and stemming.
+
+In Rust, Sift's median is lower than Tantivy's on every dataset: 1.3 times lower on SciFact,
+1.8 to 3.1 times lower on FiQA, SciDocs, and CQADupStack, and 15 times lower on ArguAna.
+From Python, Sift's median is lower than bm25s on FiQA, SciDocs, and CQADupStack, and higher on SciFact and ArguAna.
+
+Hardware for latency: NVIDIA GB10 Arm CPU, 10 Cortex-X925 and 10 Cortex-A725 cores. Each measurement ran on one Cortex-X925 core.
+Each value is the median of five passes, with less than 5% difference between passes.
 
 See the [raw results, commands, and benchmark code](docs/benchmarks/).
 

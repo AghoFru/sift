@@ -41,8 +41,9 @@ class BM25S:
             texts.append(title + "\n" + text)
         stemmer = Stemmer.Stemmer("english")
         tokens = bm25s.tokenize(texts, stopwords="en", stemmer=stemmer, show_progress=False)
-        retriever = bm25s.BM25(k1=self.config["k1"], b=self.config["b"],
-                               method=self.config["method"])
+        retriever = bm25s.BM25(
+            k1=self.config["k1"], b=self.config["b"], method=self.config["method"]
+        )
         retriever.index(tokens, show_progress=False)
         retriever.save(str(artifact / "index"))
         (artifact / "ids.json").write_text(json.dumps(ids))
@@ -141,9 +142,7 @@ class SiftFFI:
             raise RuntimeError(lib.sift_last_error().decode())
 
         def search(query, depth):
-            body = json.dumps(
-                {"q": query, "k": depth, "cache": False, "with_payload": False}
-            )
+            body = json.dumps({"q": query, "k": depth, "cache": False, "with_payload": False})
             output = ctypes.c_void_p()
             if lib.sift_search(handle, text(body), ctypes.byref(output)) != 0:
                 raise RuntimeError(lib.sift_last_error().decode())
@@ -157,5 +156,3 @@ class SiftFFI:
             yield search
         finally:
             lib.sift_close(handle)
-
-
